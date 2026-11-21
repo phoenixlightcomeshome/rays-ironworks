@@ -186,6 +186,47 @@
   #helper-input{flex:1;padding:10px 12px;border-radius:8px;background:#101012;color:var(--text);border:1px solid var(--line);font:inherit}
   #helper-send{background:var(--gold);border:none;border-radius:8px;padding:10px 16px;font-weight:700;cursor:pointer;font-family:Oswald,sans-serif;text-transform:uppercase;letter-spacing:.04em}
   #helper-note{padding:10px 14px;border-top:1px solid var(--line);font-size:.8rem;color:var(--muted)}
+/* ============================================================================
+   Ray's Ironworks — v2 styles (append inside the existing <style> element)
+   Realistic 3D configurator + 2D blueprint mode + export controls.
+   Uses the site's existing variables: --bg, --panel, --panel2, --line,
+   --gold, --gold-bright, --text, --muted.
+   ========================================================================== */
+
+/* Piece-type selector */
+.piece-pills{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 4px}
+.piece-pill{font-family:Oswald,sans-serif;text-transform:uppercase;letter-spacing:.06em;font-size:.92rem;background:var(--panel2);color:#cfc9bf;border:1px solid var(--line);border-radius:8px;padding:10px 15px;cursor:pointer}
+.piece-pill[aria-selected="true"]{background:var(--gold);color:#141210;border-color:var(--gold)}
+
+/* 3D / Blueprint mode toggle */
+.view-toggle{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 12px}
+.view-toggle .tab-btn{font-family:Oswald,sans-serif;text-transform:uppercase;letter-spacing:.06em;font-size:.92rem;background:var(--panel2);color:#cfc9bf;border:1px solid var(--line);border-radius:8px;padding:9px 15px;cursor:pointer}
+.view-toggle .tab-btn.active{background:var(--gold);color:#141210;border-color:var(--gold)}
+.view-toggle .spacer{flex:1}
+
+/* Viewer canvas + blueprint canvas */
+#blueprintCanvas{width:100%;height:auto;display:none;border-radius:8px;background:#1b3a6b;border:1px solid var(--line)}
+#gate3d{height:420px}
+@media (max-width:640px){ #gate3d{height:300px} }
+
+/* Configurator controls */
+.cfg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin-top:18px}
+.cfg-grid label{display:block;font-size:.9rem;color:var(--muted);margin-bottom:4px}
+.cfg-grid input[type=range]{width:100%;accent-color:var(--gold)}
+.cfg-grid select{width:100%;padding:9px;border-radius:6px;background:#101012;color:var(--text);border:1px solid var(--line);font:inherit}
+.cfg-checks{display:flex;gap:16px;flex-wrap:wrap;margin-top:16px}
+.cfg-checks label{display:flex;align-items:center;gap:7px;font-size:.95rem;color:#d5cfc5;cursor:pointer}
+.cfg-checks input{accent-color:var(--gold);width:17px;height:17px}
+.cfg-row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:18px}
+.cfg-row .btn{flex:0 0 auto}
+.cfg-note{margin-top:12px}
+@media (max-width:640px){
+  .cfg-row .btn{flex:1 1 100%;text-align:center}
+}
+
+/* Helper checklist + context line */
+#helper-context{display:block;font-size:.82rem;color:var(--muted)}
+.msg .checklist-step{margin:.2em 0}
 </style>
 </head>
 <body>
@@ -506,27 +547,129 @@
         </div>
       </div>
 
-      <!-- 3D viewer -->
-      <div class="viewer-box">
-        <div class="eyebrow">Try it in 3D</div>
-        <h3>Gate Configurator — drag to rotate</h3>
-        <p>Adjust the size and style below. The model is a simple rendering to help you picture the piece — Ray builds the real thing to your exact measurements.</p>
-        <canvas id="gate3d" aria-label="Interactive 3D model of a steel gate. Drag to rotate."></canvas>
-        <p id="gate3d-fallback" class="small" style="display:none">The 3D viewer could not load (it needs the Three.js library from the web). The technical drawing above shows the same gate — you can still send a quote request below.</p>
-        <div class="viewer-controls">
-          <div><label for="gate-width">Width — <span id="gate-width-val">10</span> ft</label><input type="range" id="gate-width" min="4" max="16" step="1" value="10"></div>
-          <div><label for="gate-height">Height — <span id="gate-height-val">6</span> ft</label><input type="range" id="gate-height" min="4" max="8" step="0.5" value="6"></div>
-          <div><label for="gate-style">Style</label>
-            <select id="gate-style">
-              <option value="vertical">Vertical slats</option>
-              <option value="horizontal">Horizontal bars</option>
-              <option value="solid">Solid panel</option>
-            </select>
-          </div>
-        </div>
-        <p class="viewer-readout" id="gate-readout">Gate: 10 ft wide &times; 6 ft high — vertical slats</p>
-        <p><button class="btn btn-ghost btn-small" id="gate-use-size">Use this size in my quote</button></p>
-      </div>
+<!-- ============================================================================
+     Ray's Ironworks — v2 viewer-box HTML
+     REPLACES the existing <div class="viewer-box"> ... </div> block in the
+     Quote & 3D section (the block that holds <canvas id="gate3d">).
+     Everything else on the page stays as it is.
+     IDs must match configurator-v2.js and blueprint.js.
+     ========================================================================== -->
+<div class="viewer-box">
+  <div class="eyebrow">Try it in 3D — realistic rendering</div>
+  <h3>Design Studio — drag to rotate</h3>
+  <p>Configure a gate, a railing, a sculpture base, a sign frame, or a patio cover frame. Change the size, style, posts, decorative ironwork, material, and finish — and watch it change live. Save a still image or a turntable video of your design, or check the 2D blueprint view.</p>
+  <p class="honest"><b>What you&rsquo;re looking at:</b> a visualization of your configured piece — rendered to look like the real thing, with metal, light, and shadow — not a photograph of a finished piece. Ray builds the real thing to your exact measurements, and the final design and price come from him.</p>
+
+  <!-- 3D / Blueprint mode -->
+  <div class="view-toggle" style="margin-top:18px">
+    <button type="button" class="tab-btn active" id="mode3DBtn" aria-selected="true">3D View</button>
+    <button type="button" class="tab-btn" id="mode2DBtn" aria-selected="false">2D Blueprint</button>
+    <span class="spacer"></span>
+    <button type="button" class="btn btn-ghost btn-small" id="downloadBlueprintBtn">Download Blueprint PNG</button>
+  </div>
+
+  <canvas id="gate3d" aria-label="Interactive 3D model of your configured ironwork. Drag to rotate."></canvas>
+  <canvas id="blueprintCanvas" width="900" height="560" aria-label="2D technical elevation drawing of your configured piece"></canvas>
+  <p id="gate3d-fallback" class="small" style="display:none">The 3D viewer could not load (it needs the Three.js library from the web). The technical drawing above shows the same piece — you can still send a quote request below.</p>
+
+  <!-- Piece type -->
+  <div class="piece-pills" role="tablist" aria-label="Piece type">
+    <button type="button" class="piece-pill" role="tab" data-piece="gate" aria-selected="true">Gate</button>
+    <button type="button" class="piece-pill" role="tab" data-piece="railing" aria-selected="false">Railing</button>
+    <button type="button" class="piece-pill" role="tab" data-piece="sculpture-base" aria-selected="false">Sculpture Base</button>
+    <button type="button" class="piece-pill" role="tab" data-piece="sign-frame" aria-selected="false">Sign Frame</button>
+    <button type="button" class="piece-pill" role="tab" data-piece="patio-cover" aria-selected="false">Patio Cover Frame</button>
+  </div>
+
+  <!-- Dimensions + style -->
+  <div class="cfg-grid">
+    <div><label for="cfg-width"><span id="cfg-width-label">Width</span> — <span id="cfg-width-val">10 ft</span></label><input type="range" id="cfg-width" min="4" max="16" step="0.5" value="10"></div>
+    <div><label for="cfg-height"><span id="cfg-height-label">Height</span> — <span id="cfg-height-val">6 ft</span></label><input type="range" id="cfg-height" min="4" max="8" step="0.5" value="6"></div>
+    <div id="cfg-depth-row" style="display:none"><label for="cfg-depth"><span id="cfg-depth-label">Depth</span> — <span id="cfg-depth-val">8 ft</span></label><input type="range" id="cfg-depth" min="1" max="20" step="0.5" value="8"></div>
+    <div><label for="cfg-style">Style</label>
+      <select id="cfg-style">
+        <option value="vertical">Vertical slats</option>
+        <option value="horizontal">Horizontal bars</option>
+        <option value="solid">Solid panel</option>
+      </select>
+    </div>
+    <div id="cfg-leaves-row"><label for="cfg-leaves">Leaves</label>
+      <select id="cfg-leaves">
+        <option value="single">Single leaf</option>
+        <option value="double">Double leaves</option>
+      </select>
+    </div>
+    <div id="cfg-toprail-row" style="display:none"><label for="cfg-toprail">Top rail profile</label>
+      <select id="cfg-toprail">
+        <option value="flat">Flat bar</option>
+        <option value="round">Round tube</option>
+        <option value="cap">Wide cap</option>
+      </select>
+    </div>
+    <div id="cfg-post-row"><label for="cfg-post">Post style</label>
+      <select id="cfg-post">
+        <option value="square">Square</option>
+        <option value="round">Round</option>
+        <option value="ornate">Ornate (with collars)</option>
+      </select>
+    </div>
+    <div id="cfg-postspacing-row" style="display:none"><label for="cfg-postspacing">Post spacing — <span id="cfg-postspacing-val">6 ft</span></label><input type="range" id="cfg-postspacing" min="4" max="8" step="0.5" value="6"></div>
+    <div id="cfg-picketspacing-row" style="display:none"><label for="cfg-picketspacing">Picket spacing — <span id="cfg-picketspacing-val">4 in</span></label><input type="range" id="cfg-picketspacing" min="3" max="6" step="0.5" value="4"></div>
+    <div><label for="cfg-finial">Finials (on posts)</label>
+      <select id="cfg-finial">
+        <option value="none">None</option>
+        <option value="ball">Ball</option>
+        <option value="spear">Spear</option>
+        <option value="scroll">Scroll</option>
+      </select>
+    </div>
+    <div><label for="cfg-material">Material</label>
+      <select id="cfg-material">
+        <option value="wrought">Wrought iron</option>
+        <option value="steel">Steel</option>
+        <option value="aluminum">Aluminum</option>
+      </select>
+    </div>
+    <div><label for="cfg-finish">Finish</label>
+      <select id="cfg-finish">
+        <option value="matte-black">Matte black</option>
+        <option value="bronze">Bronze</option>
+        <option value="copper">Copper</option>
+        <option value="galvanized">Galvanized</option>
+        <option value="powder-coat">Powder-coat (choose a color)</option>
+      </select>
+    </div>
+    <div id="cfg-powder-row" style="display:none"><label for="cfg-powder">Powder-coat color</label>
+      <select id="cfg-powder">
+        <option value="charcoal">Charcoal</option>
+        <option value="forest">Forest green</option>
+        <option value="bronze-brown">Bronze brown</option>
+        <option value="white">White</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- Decorative ironwork -->
+  <div class="cfg-checks" aria-label="Decorative ironwork">
+    <span style="width:100%;color:var(--muted);font-size:.9rem">Decorative ironwork (shows on the model and in your quote):</span>
+    <label><input type="checkbox" id="cfg-decor-scroll"> Scrolls</label>
+    <label><input type="checkbox" id="cfg-decor-ring"> Rings</label>
+    <label><input type="checkbox" id="cfg-decor-leaf"> Leaf branch</label>
+    <label><input type="checkbox" id="cfg-decor-medallion"> Medallion</label>
+  </div>
+
+  <!-- View + export -->
+  <div class="cfg-row">
+    <button type="button" class="btn btn-ghost btn-small" id="cfg-turntable" aria-pressed="true">Pause Turntable</button>
+    <button type="button" class="btn btn-ghost btn-small" id="cfg-still">Save a Still Image (PNG)</button>
+    <button type="button" class="btn btn-ghost btn-small" id="cfg-video">Record Turntable Video (8 sec)</button>
+    <label style="display:flex;align-items:center;gap:7px;font-size:.95rem;color:#d5cfc5;cursor:pointer"><input type="checkbox" id="cfg-simple" style="accent-color:var(--gold);width:17px;height:17px"> Simple mode (faster on older phones)</label>
+  </div>
+  <p class="viewer-readout" id="cfg-readout">Gate: 10 ft wide × 6 ft high — vertical slats</p>
+  <p><button type="button" class="btn btn-gold btn-small" id="cfg-use-quote">Use this in my quote</button></p>
+  <p class="form-status" id="cfg-status" role="status"></p>
+  <p class="small cfg-note">The turntable video records one full rotation (about 8 seconds) and downloads as a WebM or MP4 file, depending on your browser. If your browser can&rsquo;t record video, the page will tell you plainly — use the still image instead. The blueprint is a concept drawing, not for fabrication.</p>
+</div>
 
       <!-- Quote form -->
       <form class="quote-form" id="quote-form" novalidate>
@@ -642,6 +785,9 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="configurator-v2.js"></script>
+<script src="blueprint.js"></script>
+<script src="forge-guide.js"></script>
 <script>
 (function(){
   "use strict";
@@ -666,103 +812,6 @@
     });
   });
 
-  /* ---------- 3D gate viewer (Three.js, client-side) ---------- */
-  var gateState = { width: 10, height: 6, style: "vertical" };
-  function updateReadout(){
-    var styleName = {vertical:"vertical slats", horizontal:"horizontal bars", solid:"solid panel"}[gateState.style];
-    $("#gate-readout").textContent = "Gate: " + gateState.width + " ft wide × " + gateState.height + " ft high — " + styleName;
-    $("#gate-width-val").textContent = gateState.width;
-    $("#gate-height-val").textContent = gateState.height;
-  }
-  function buildGate(){
-    if (!window.__gate) return;
-    var g = window.__gate;
-    while (g.group.children.length) g.group.remove(g.group.children);
-    var w = gateState.width, h = gateState.height;
-    var steel = new THREE.MeshStandardMaterial({ color: 0x8a8f98, metalness: 0.8, roughness: 0.45 });
-    var dark  = new THREE.MeshStandardMaterial({ color: 0x3a3f46, metalness: 0.75, roughness: 0.5 });
-    function box(x, y, z, sx, sy, sz, mat){
-      var m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
-      m.position.set(x, y, z); g.group.add(m); return m;
-    }
-    // posts
-    box(-w/2 - 0.25, h/2, 0, 0.5, h, 0.5, dark);
-    box( w/2 + 0.25, h/2, 0, 0.5, h, 0.5, dark);
-    // rails
-    box(0, h - 0.25, 0, w, 0.5, 0.28, dark);
-    box(0, 0.25, 0, w, 0.5, 0.28, dark);
-    if (gateState.style === "vertical"){
-      var n = Math.max(3, Math.round(w * 1.2));
-      for (var i = 0; i < n; i++){
-        var x = -w/2 + (w * (i + 0.5) / n);
-        box(x, h/2, 0, 0.22, h - 0.5, 0.16, steel);
-      }
-    } else if (gateState.style === "horizontal"){
-      var rows = Math.max(3, Math.round(h * 1.5));
-      for (var j = 0; j < rows; j++){
-        var y = 0.5 + ((h - 1) * (j + 0.5) / rows);
-        box(0, y, 0, w, 0.22, 0.16, steel);
-      }
-    } else {
-      box(0, h/2, 0, w, h - 0.5, 0.12, steel);
-    }
-    updateReadout();
-  }
-  function init3D(){
-    var canvas = $("#gate3d");
-    if (typeof THREE === "undefined" || !canvas){
-      var fb = $("#gate3d-fallback"); if (fb) fb.style.display = "block";
-      if (canvas) canvas.style.display = "none";
-      return;
-    }
-    try {
-      var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      var scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x101012);
-      var camera = new THREE.PerspectiveCamera(45, 2, 0.1, 100);
-      camera.position.set(9, 7, 13);
-      scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-      var dir = new THREE.DirectionalLight(0xffe0b3, 0.9);
-      dir.position.set(6, 12, 8); scene.add(dir);
-      var ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60),
-        new THREE.MeshStandardMaterial({ color: 0x1a1a1d, roughness: 0.95 }));
-      ground.rotation.x = -Math.PI / 2; ground.position.y = 0; scene.add(ground);
-      var group = new THREE.Group(); scene.add(group);
-      window.__gate = { group: group };
-      var controls = new THREE.OrbitControls(camera, canvas);
-      controls.target.set(0, 3, 0);
-      controls.enableDamping = true; controls.dampingFactor = 0.08;
-      controls.maxPolarAngle = Math.PI * 0.52;
-      controls.update();
-      function resize(){
-        var w = canvas.clientWidth, h = canvas.clientHeight;
-        if (canvas.width !== w || canvas.height !== h){
-          renderer.setSize(w, h, false);
-          camera.aspect = w / h; camera.updateProjectionMatrix();
-        }
-      }
-      function animate(){
-        requestAnimationFrame(animate);
-        resize(); controls.update(); renderer.render(scene, camera);
-      }
-      buildGate(); animate();
-    } catch (e){
-      var fb2 = $("#gate3d-fallback"); if (fb2) fb2.style.display = "block";
-      canvas.style.display = "none";
-    }
-  }
-  $("#gate-width").addEventListener("input", function(e){ gateState.width = +e.target.value; buildGate(); });
-  $("#gate-height").addEventListener("input", function(e){ gateState.height = +e.target.value; buildGate(); });
-  $("#gate-style").addEventListener("change", function(e){ gateState.style = e.target.value; buildGate(); });
-  $("#gate-use-size").addEventListener("click", function(){
-    $("#q-type").value = "Custom Gate";
-    $("#q-size").value = gateState.width + " ft wide × " + gateState.height + " ft high";
-    document.getElementById("quote-form").scrollIntoView({behavior:"smooth"});
-    setStatus("Gate size added to your quote: " + $("#q-size").value + ".", "ok");
-  });
-  updateReadout();
-  if (document.readyState === "complete") init3D(); else window.addEventListener("load", init3D);
 
   /* ---------- Quote form ---------- */
   var photos = []; // {name, size, file} — kept in the browser only, never uploaded
@@ -887,115 +936,7 @@
     } else { setStatus("Copy is not available in this browser — use “Download Quote Summary” instead.", "warn"); }
   });
 
-  /* ---------- In-app helper ---------- */
-  var panel = $("#helper-panel"), fab = $("#helper-fab"), log = $("#helper-log"), chipsBox = $("#helper-chips");
-  var KB = [
-    { k: ["price","cost","how much","quote","charge"], a: "Every commission is priced to the job — there are no set prices. The fastest route is the quote form on this page: pick a project type, add your size and photos, and Ray replies with a quote and a timeline. Or email him directly at raysironworks101@gmail.com." },
-    { k: ["how long","timeline","how soon","turnaround","when"], a: "Timelines depend on the job. For scale: the Monument of Legacy took six weeks in the shop, and the Wingfield Park gates went from the shop to installed in spring 2021. Ray gives a timeline with every quote." },
-    { k: ["where","area","serve","location","reno","truckee","tahoe","los angeles","topanga","seattle"], a: "Ray works across Reno, Tahoe, and Truckee, and the Los Angeles area — Venice Beach, Beverly Hills, Topanga Canyon — with installed work reaching Seattle, Washington." },
-    { k: ["process","how it works","how do you","steps","make"], a: "Ray designs, fabricates, and installs each piece himself — from the first sketch and CAD, through the shop, to on-site installation. What he proposes is what gets built: no handoffs, no surprises." },
-    { k: ["gate","gates"], a: "Custom gates are one of Ray's specialties — from garden gates to public entries. His best-known gate work is the Wingfield Park Amphitheater Gates in Reno: four gates, about 9 ft tall × 4 ft wide, a City of Reno Youth Council commission installed in spring 2021. Try the gate tab in the Quote & 3D section, or the 3D gate configurator." },
-    { k: ["railing"], a: "Ray builds architectural railings, interior and exterior — staircases, balconies, and hillside runs. See the Beverly Hills black steel railings in the gallery, then use the railing tab in the Quote & 3D section to start a quote." },
-    { k: ["sculpture","statue","art"], a: "Ray's sculpture includes cast-aluminum work like Ghosts of Malibu, Wing, and Reach — cast from aluminum salvaged after the Malibu fires — and Found Faith, a life-size aluminum figure from 2018. His large-scale installation, The Conflux of Intent, is an 18-foot steel piece from Burning Man 2026." },
-    { k: ["wingfield"], a: "The Wingfield Park Amphitheater Gates: a City of Reno Youth Council commission (about $15,000). Ray was the lead fabricating artist. Four gates, each about 9 ft tall × 4 ft wide, installed in spring 2021." },
-    { k: ["conflux"], a: "The Conflux of Intent is an 18-foot interactive modular steel installation assembled on the Black Rock Desert in 2026 — a sphere of bent steel rod and woven wire mesh above a 30-foot circular steel stage. By day a shaded gathering place; by night, lit from within." },
-    { k: ["found faith","faith"], a: "Found Faith is a life-size aluminum mannequin — about 69 inches tall — holding a cross, built from upcycled materials for Project Sanctuary, a 2018 fashion show at the First Continental Church in Los Angeles." },
-    { k: ["malibu","ghosts"], a: "Ghosts of Malibu, Wing, and Reach are cast from upcycled aluminum salvaged after the Malibu fires — from homes, cars, and possessions people lost. Each piece is about 12 × 12 × 12 inches." },
-    { k: ["digital","art shop","shop","buy","print"], a: "Ray also makes digital art — surreal, symbolic pieces about faith, transformation, and resilience. Original digital pieces are in the Art Shop as instant downloads. There's a link in the Digital Art section of this page." },
-    { k: ["contact","phone","email","call","reach"], a: "You can reach Ray at 424-394-9271 or raysironworks101@gmail.com. His Facebook page is Ray's Ironworks, and the full artist portfolio (PDF) is linked in the Contact section." },
-    { k: ["service","what do you do","offer"], a: "Ray builds custom gates, railings, sculpture and public art, monument signs, architectural ironwork, and structural steel. Everything is designed, fabricated, and installed by Ray's Ironworks. The Services section lists them all." },
-    { k: ["experience","how long","years","background"], a: "Ray has more than thirty years at the forge. He has owned and operated Ray's Ironworks since 2015, and welded at Ski's Welding from 1994 to 2018. He holds a Welding Certification and a Renewable Energy A.A.S. from Truckee Meadows Community College." }
-  ];
-  var QUICK = ["How much does a custom gate cost?", "How long does a project take?", "What areas do you serve?", "Help me request a quote", "How do I contact Ray?"];
-  var quoteFlow = null; // {step, data}
-  function addMsg(text, who){
-    var d = document.createElement("div");
-    d.className = "msg " + who;
-    d.innerHTML = text;
-    log.appendChild(d);
-    log.scrollTop = log.scrollHeight;
-  }
-  function renderChips(){
-    chipsBox.innerHTML = "";
-    QUICK.forEach(function(q){
-      var b = document.createElement("button");
-      b.type = "button"; b.className = "chip"; b.textContent = q;
-      b.addEventListener("click", function(){ ask(q); });
-      chipsBox.appendChild(b);
-    });
-  }
-  function linkify(t){
-    return t.replace(/raysironworks101@gmail\.com/g, '<a href="mailto:raysironworks101@gmail.com">raysironworks101@gmail.com</a>')
-            .replace(/424-394-9271/g, '<a href="tel:+14243949271">424-394-9271</a>');
-  }
-  function answer(q){
-    var s = q.toLowerCase();
-    if (/help me (request|get) a quote|start a quote|draft.*quote/.test(s) || s.indexOf("help me request a quote") > -1){
-      quoteFlow = { step: 0, data: {} };
-      return "Happy to help you draft a quote request. First — what kind of project is it? (For example: gate, railing, sculpture, monument sign, patio cover, or something else.)";
-    }
-    if (quoteFlow){
-      var f = quoteFlow;
-      if (f.step === 0){ f.data.type = q; f.step = 1; return "Got it — a " + esc(q) + ". About how big? (For example: 10 ft wide × 6 ft high — or just say “not sure yet”.)"; }
-      if (f.step === 1){ f.data.size = q; f.step = 2; return "And where will it go? (City or neighborhood — for example: Truckee, CA.)"; }
-      if (f.step === 2){ f.data.location = q; f.step = 3; return "When would you like it? (For example: flexible, within a month, or 1–3 months.)"; }
-      if (f.step === 3){
-        f.data.timeline = q; f.step = 4;
-        return "Last one — in a sentence or two, what should it look like or do? (Style, finish, or a feeling — anything helps.)";
-      }
-      if (f.step === 4){
-        f.data.desc = q; quoteFlow = null;
-        var sel = $("#q-type");
-        var known = ["Custom Gate","Railing","Sculpture","Monument Sign","Patio Cover"];
-        var match = null;
-        known.forEach(function(k){ if (f.data.type.toLowerCase().indexOf(k.toLowerCase().split(" ")[0]) > -1) match = k; });
-        if (match) sel.value = match;
-        $("#q-size").value = f.data.size || "";
-        $("#q-location").value = f.data.location || "";
-        var tl = $("#q-timeline");
-        var t = (f.data.timeline || "").toLowerCase();
-        if (t.indexOf("month") > -1 && t.indexOf("1") > -1) tl.value = "Within 1 month";
-        else if (t.indexOf("1") > -1 && t.indexOf("3") > -1) tl.value = "1–3 months";
-        else if (t.indexOf("3") > -1) tl.value = "3+ months";
-        $("#q-desc").value = f.data.desc || "";
-        setTimeout(function(){ document.getElementById("quote-form").scrollIntoView({behavior:"smooth"}); }, 600);
-        return "Here&rsquo;s your draft — I&rsquo;ve filled it into the quote form below so you can review it, add your name and email, and attach photos:<br><br><b>Type:</b> " + esc(f.data.type) + "<br><b>Size:</b> " + esc(f.data.size) + "<br><b>Location:</b> " + esc(f.data.location) + "<br><b>Timeline:</b> " + esc(f.data.timeline) + "<br><b>Idea:</b> " + esc(f.data.desc) + "<br><br>Scroll down to the quote form to finish and send it to Ray.";
-      }
-    }
-    for (var i = 0; i < KB.length; i++){
-      var hit = KB[i].k.some(function(kw){ return s.indexOf(kw) > -1; });
-      if (hit) return KB[i].a;
-    }
-    return "I can help with Ray&rsquo;s work, services, process, and preparing a quote request — but I don&rsquo;t have an answer for that one. The fastest route is Ray himself: raysironworks101@gmail.com or 424-394-9271. Or try one of the suggestions below.";
-  }
-  function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
-  function ask(q){
-    addMsg(esc(q), "user");
-    setTimeout(function(){ addMsg(linkify(answer(q)), "bot"); }, 350);
-  }
-  function openHelper(prefill){
-    panel.classList.add("open");
-    if (!log.children.length){
-      addMsg("Hi — I&rsquo;m the Ironworks Helper. I can tell you about Ray&rsquo;s work and process, walk you through a quote request, or point you to the right part of the site. What would you like to know?", "bot");
-      renderChips();
-    }
-    if (prefill) setTimeout(function(){ ask(prefill); }, 300);
-    var inp = $("#helper-input"); if (inp) inp.focus();
-  }
-  fab.addEventListener("click", function(){ panel.classList.contains("open") ? panel.classList.remove("open") : openHelper(); });
-  $("#helper-close").addEventListener("click", function(){ panel.classList.remove("open"); });
-  $$("[data-helper-open]").forEach(function(b){
-    b.addEventListener("click", function(){ openHelper(b.dataset.helperQ || null); });
-  });
-  $("#helper-form").addEventListener("submit", function(e){
-    e.preventDefault();
-    var inp = $("#helper-input");
-    var v = inp.value.trim();
-    if (!v) return;
-    inp.value = "";
-    ask(v);
-  });
-})();
+
 </script>
 
 </body>
