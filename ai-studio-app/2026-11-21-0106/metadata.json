@@ -1,0 +1,6 @@
+{
+  "name": "Ray's Ironworks",
+  "description": "Ray's Ironworks — custom architectural metalwork, gates, railings, sculpture, monument signs, and 3D Design Studio by Ray Mroczkowski. Reno / Tahoe / Truckee and Los Angeles.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
