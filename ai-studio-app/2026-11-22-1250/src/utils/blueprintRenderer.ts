@@ -2229,13 +2229,16 @@ export function drawBlueprint(
     box2 = { x0: fx, x1: fx + w, y0, y1: gy };
   }
 
-  registerMoveTarget(
-    PIECE_MOVE_ID,
-    box2.x0,
-    box2.y0,
-    box2.x1 - box2.x0,
-    box2.y1 - box2.y0,
-  );
+  // The whole piece is the fallback drag target: pickets, bars and accents
+  // registered above must win inside the frame, so keep this one at the end of
+  // the hit-test list (which is searched last-to-first).
+  blueprintMoveTargets.unshift({
+    id: PIECE_MOVE_ID,
+    x: box2.x0,
+    y: box2.y0,
+    w: box2.x1 - box2.x0,
+    h: box2.y1 - box2.y0,
+  });
 
   // Optional Sign Plaque Overlay on non-sign-frame pieces
   if (state.showSign && state.piece !== 'sign-frame') {

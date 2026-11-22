@@ -100,6 +100,7 @@ import {
   formatFeetInches,
   formatItemOffset,
   getActiveSupplierSpecs,
+  hasItemOffset,
   itemOffsetOf,
   moveItemLabel,
   getEffectivePicketSizeLabel,
@@ -1340,6 +1341,19 @@ export function DesignStudio3D({
     if (!photoDragRef.current) return;
     e.stopPropagation();
     photoDragRef.current = null;
+  };
+
+  const handleResetMovedItem = (itemId: string) => {
+    setConfig((prev) => {
+      if (!prev.itemOffsets?.[itemId]) return prev;
+      const nextOffsets = { ...prev.itemOffsets };
+      delete nextOffsets[itemId];
+      return { ...prev, itemOffsets: nextOffsets };
+    });
+    setStatus({
+      text: `${moveItemLabel(itemId)} returned to its original spot.`,
+      kind: 'ok',
+    });
   };
 
   // Pointer handlers for 2D Blueprint (free drawing + photo tap-to-dimension / calibrate + picket select)
@@ -3977,23 +3991,44 @@ export function DesignStudio3D({
                   </button>
                 </div>
 
-                <span className="text-[11px] text-[#a8a29a]">
-                  {interactionMode === 'move'
-                    ? is2DView
-                      ? 'Drag an item to move it · horizontal = left/right · vertical = front/back'
-                      : 'Drag an item to move it · drag empty space to rotate'
-                    : interactionMode === 'draw'
+                <div className="flex flex-col items-end gap-1">
+                  <span className="text-[11px] text-[#a8a29a]">
+                    {interactionMode === 'move'
                       ? is2DView
-                        ? 'Drawing on 2D Blueprint'
-                        : 'Drawing over 3D View (rotation paused)'
-                      : interactionMode === 'accent'
-                        ? 'Tap a picket, then tap an accent button'
-                        : is2DView
-                          ? '2D Blueprint inspection'
-                          : config.frozenView
-                            ? '3D View Frozen'
-                            : 'Drag to rotate · Tap part to color'}
-                </span>
+                        ? 'Drag an item to move it · horizontal = left/right · vertical = front/back'
+                        : 'Drag an item to move it · drag empty space to rotate'
+                      : interactionMode === 'draw'
+                        ? is2DView
+                          ? 'Drawing on 2D Blueprint'
+                          : 'Drawing over 3D View (rotation paused)'
+                        : interactionMode === 'accent'
+                          ? 'Tap a picket, then tap an accent button'
+                          : is2DView
+                            ? '2D Blueprint inspection'
+                            : config.frozenView
+                              ? '3D View Frozen'
+                              : 'Drag to rotate · Tap part to color'}
+                  </span>
+                  {interactionMode === 'move' &&
+                    config.selectedMoveItemId &&
+                    hasItemOffset(config, config.selectedMoveItemId) && (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded border border-[#c9883d]/60 bg-[#1c1a16] text-[#e8a317]">
+                        {moveItemLabel(config.selectedMoveItemId)}:{' '}
+                        {formatItemOffset(
+                          itemOffsetOf(config, config.selectedMoveItemId),
+                        )}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleResetMovedItem(config.selectedMoveItemId!)
+                          }
+                          className="underline decoration-dotted hover:text-white cursor-pointer bg-transparent border-0 p-0 text-[11px]"
+                        >
+                          Reset
+                        </button>
+                      </span>
+                    )}
+                </div>
               </div>
 
               {/* Free Drawing Toolbar (works on BOTH 2D & 3D) */}
@@ -4179,7 +4214,7 @@ export function DesignStudio3D({
               aria-label="Interactive 3D model of your configured ironwork. Drag to rotate, or tap any part to color or place accents."
               className={`w-full h-[320px] sm:h-[440px] lg:h-[500px] ${
                 is3DViewportActive && !webglFailed ? 'block' : 'hidden'
-              }`}
+              } ${interactionMode === 'move' ? 'cursor-grab touch-none' : ''}`}
             />
             <canvas
               ref={canvas3dDrawRef}
@@ -4217,9 +4252,11 @@ export function DesignStudio3D({
                       ? photo2DMode === 'add' || photo2DMode === 'calibrate'
                         ? 'cursor-crosshair touch-manipulation'
                         : 'touch-manipulation'
-                      : interactionMode === 'accent'
-                        ? 'cursor-pointer'
-                        : ''
+                      : interactionMode === 'move'
+                        ? 'cursor-grab touch-none'
+                        : interactionMode === 'accent'
+                          ? 'cursor-pointer'
+                          : ''
                 }`}
               />
 
