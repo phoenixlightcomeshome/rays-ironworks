@@ -483,6 +483,72 @@ export interface SignPictureData {
   cutSegments?: Array<[number, number, number, number]>;
 }
 
+/** Ground-plane offset (feet) of one placed item from its original spot. */
+export interface ItemOffset {
+  x: number; // left/right
+  z: number; // front/back
+}
+
+/** Shared id for the main piece frame (posts / rails / base / sign frame / patio frame). */
+export const PIECE_MOVE_ID = 'piece';
+
+export function itemOffsetOf(
+  state: ConfiguratorState,
+  itemId: string,
+): ItemOffset {
+  const off = state.itemOffsets?.[itemId];
+  return off && Number.isFinite(off.x) && Number.isFinite(off.z)
+    ? off
+    : { x: 0, z: 0 };
+}
+
+export function hasItemOffset(state: ConfiguratorState, itemId: string): boolean {
+  const off = itemOffsetOf(state, itemId);
+  return Math.abs(off.x) > 0.001 || Math.abs(off.z) > 0.001;
+}
+
+export function formatItemOffset(off: ItemOffset): string {
+  const parts: string[] = [];
+  if (Math.abs(off.x) > 0.001) {
+    parts.push(
+      `${formatFeetInches(Math.abs(off.x))} ${off.x > 0 ? 'right' : 'left'}`,
+    );
+  }
+  if (Math.abs(off.z) > 0.001) {
+    parts.push(
+      `${formatFeetInches(Math.abs(off.z))} ${off.z > 0 ? 'forward' : 'back'}`,
+    );
+  }
+  return parts.length ? parts.join(' · ') : 'original spot';
+}
+
+export function moveItemLabel(itemId: string): string {
+  if (itemId === PIECE_MOVE_ID) return 'Main piece';
+  const [kind, a, b] = itemId.split(':');
+  if (kind === 'picket') return `Picket #${Number(a) + 1}`;
+  if (kind === 'accent') {
+    return `Accent ${Number(b) + 1} on picket #${Number(a) + 1}`;
+  }
+  if (kind === 'decor') {
+    const labels: Record<string, string> = {
+      scrolls: 'Scroll',
+      rings: 'Ring',
+      leaves: 'Leaf branch',
+      medallion: 'Medallion',
+      rosettes: 'Rosette',
+      baskets: 'Basket',
+      twistedBars: 'Twisted bar',
+      spearheadFinials: 'Spearhead finial',
+      fleurDeLis: 'Fleur-de-lis',
+      collars: 'Collar',
+      leafSprays: 'Leaf spray',
+      catalogLeaf: 'Catalog leaf',
+    };
+    return `${labels[a] || 'Ornament'}${b ? ` #${Number(b) + 1}` : ''}`;
+  }
+  return 'Placed item';
+}
+
 export interface ConfiguratorState {
   hasPiece?: boolean;
   piece: PieceType;
@@ -534,6 +600,9 @@ export interface ConfiguratorState {
   signPicture: SignPictureData | null;
   turntable: boolean;
   simple: boolean;
+  /** One shared source of truth for every placed item's ground-plane position. */
+  itemOffsets: Record<string, ItemOffset>;
+  selectedMoveItemId: string | null;
 }
 
 export interface StandardSizePreset {
@@ -1078,6 +1147,8 @@ export const INITIAL_CONFIG: ConfiguratorState = {
   signPicture: null,
   turntable: true,
   simple: false,
+  itemOffsets: {},
+  selectedMoveItemId: null,
 };
 
 export const SAMPLE_GATE_CONFIG: ConfiguratorState = {

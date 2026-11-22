@@ -11,8 +11,10 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import {
   ConfiguratorState,
   FINISHES,
+  ItemOffset,
   LEAF_CATALOG,
   MATERIALS,
+  PIECE_MOVE_ID,
   POWDERS,
   PartArea,
   PicketAccentType,
@@ -20,6 +22,7 @@ import {
   getActiveSupplierSpecs,
   getEffectivePicketInches,
   getPicketLayoutStats,
+  itemOffsetOf,
 } from '../types/configurator';
 
 import {
@@ -31,7 +34,12 @@ import {
 
 export type { UploadedPhoto3D };
 
-export type SceneInteractionMode = 'rotate' | 'select' | 'draw' | 'accent';
+export type SceneInteractionMode =
+  | 'rotate'
+  | 'select'
+  | 'draw'
+  | 'accent'
+  | 'move';
 
 function detectSoftwareGl(): boolean {
   try {
@@ -509,7 +517,30 @@ export class IronworksScene {
   private onSelectPartCb?: (area: PartArea) => void;
   private onSelectPicketCb?: (picketIndex: number) => void;
   private onPhotoLoadErrorCb?: (message: string) => void;
+  private onMoveItemCb?: (
+    itemId: string,
+    offset: ItemOffset,
+    final: boolean,
+  ) => void;
   private interactionMode: SceneInteractionMode = 'rotate';
+
+  // Move mode: every placed item that can be dragged, with its build-time position.
+  private moveRoots: Array<{
+    id: string;
+    obj: THREE.Object3D;
+    baseX: number;
+    baseZ: number;
+  }> = [];
+  private moveHalo: THREE.Group | null = null;
+  private moveDrag: {
+    id: string;
+    pointerId: number;
+    startPoint: THREE.Vector3;
+    startOffset: ItemOffset;
+    currentOffset: ItemOffset;
+  } | null = null;
+  private moveRafId = 0;
+  private pendingMoveEmit: { id: string; offset: ItemOffset } | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -520,6 +551,11 @@ export class IronworksScene {
       onSelectPart?: (area: PartArea) => void;
       onSelectPicket?: (picketIndex: number) => void;
       onPhotoLoadError?: (message: string) => void;
+      onMoveItem?: (
+        itemId: string,
+        offset: ItemOffset,
+        final: boolean,
+      ) => void;
     },
   ) {
     this.canvas = canvas;
@@ -529,6 +565,7 @@ export class IronworksScene {
     this.onSelectPartCb = callbacks?.onSelectPart;
     this.onSelectPicketCb = callbacks?.onSelectPicket;
     this.onPhotoLoadErrorCb = callbacks?.onPhotoLoadError;
+    this.onMoveItemCb = callbacks?.onMoveItem;
     this.isSoftwareGl = detectSoftwareGl();
 
     this.renderer = new THREE.WebGLRenderer({
@@ -672,6 +709,13 @@ export class IronworksScene {
     canvas.addEventListener('pointerup', this.handlePointerUp);
     canvas.addEventListener('webglcontextlost', this.handleContextLost);
     canvas.addEventListener('webglcontextrestored', this.handleContextRestored);
+    // Capture on the wrapper so an item drag can pre-empt OrbitControls, while
+    // pointer-downs on empty space still fall through and rotate the camera.
+    canvas.parentElement?.addEventListener(
+      'pointerdown',
+      this.handleMovePointerDown,
+      true,
+    );
 
     this.resize(false);
     this.buildPiece(initialState, true);
@@ -695,6 +739,7 @@ export class IronworksScene {
   }
 
   public setInteractionMode(mode: SceneInteractionMode) {
+    if (mode !== 'move' && this.moveDrag) this.handleMovePointerUp();
     this.interactionMode = mode;
     this.syncControlsState();
   }
@@ -717,7 +762,7 @@ export class IronworksScene {
     const dy = e.clientY - this.pointerDownPos.y;
     this.pointerDownPos = null;
     if (Math.hypot(dx, dy) > 8) return;
-    if (this.interactionMode === 'draw') return;
+    if (this.interactionMode === 'draw' || this.interactionMode === 'move') return;
 
     const rect = this.canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -750,6 +795,225 @@ export class IronworksScene {
       this.onSelectPartCb(area);
     }
   };
+
+  /** First movable item under the pointer, if any. */
+  private raycastMoveId(clientX: number, clientY: number): string | null {
+    const rect = this.canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const hits = this.raycaster.intersectObjects(this.modelGroup.children, true);
+    for (const hit of hits) {
+      let obj: THREE.Object3D | null = hit.object;
+      while (obj && !obj.userData.moveId) obj = obj.parent;
+      if (obj?.userData.moveId) return String(obj.userData.moveId);
+    }
+    return null;
+  }
+
+  private groundPoint(clientX: number, clientY: number): THREE.Vector3 | null {
+    const rect = this.canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const point = new THREE.Vector3();
+    return this.raycaster.ray.intersectPlane(plane, point) ? point : null;
+  }
+
+  private handleMovePointerDown = (e: PointerEvent) => {
+    if (this.interactionMode !== 'move' || this.moveDrag) return;
+    if (e.target !== this.canvas) return;
+    if (e.button !== undefined && e.button !== 0) return;
+    if (!this.currentState.hasPiece || this.uploadedPhoto) return;
+
+    const itemId = this.raycastMoveId(e.clientX, e.clientY);
+    if (!itemId) return;
+    const startPoint = this.groundPoint(e.clientX, e.clientY);
+    if (!startPoint) return;
+
+    // Stop OrbitControls (and the tap-to-select handler) from seeing this press.
+    e.stopPropagation();
+    e.preventDefault();
+    this.controls.enabled = false;
+    this.moveDrag = {
+      id: itemId,
+      pointerId: e.pointerId,
+      startPoint,
+      startOffset: itemOffsetOf(this.currentState, itemId),
+      currentOffset: itemOffsetOf(this.currentState, itemId),
+    };
+    this.currentState = {
+      ...this.currentState,
+      selectedMoveItemId: itemId,
+    };
+    this.updateMoveHalo();
+    this.emitMove(itemId, this.moveDrag.currentOffset, false);
+    window.addEventListener('pointermove', this.handleMovePointerMove);
+    window.addEventListener('pointerup', this.handleMovePointerUp);
+    window.addEventListener('pointercancel', this.handleMovePointerUp);
+  };
+
+  private handleMovePointerMove = (e: PointerEvent) => {
+    const drag = this.moveDrag;
+    if (!drag) return;
+    const point = this.groundPoint(e.clientX, e.clientY);
+    if (!point) return;
+    const offset: ItemOffset = {
+      x: drag.startOffset.x + (point.x - drag.startPoint.x),
+      z: drag.startOffset.z + (point.z - drag.startPoint.z),
+    };
+    drag.currentOffset = offset;
+    this.applyItemOffset(drag.id, offset);
+    this.updateMoveHalo();
+    this.emitMove(drag.id, offset, false);
+  };
+
+  private handleMovePointerUp = () => {
+    const drag = this.moveDrag;
+    if (!drag) return;
+    this.moveDrag = null;
+    window.removeEventListener('pointermove', this.handleMovePointerMove);
+    window.removeEventListener('pointerup', this.handleMovePointerUp);
+    window.removeEventListener('pointercancel', this.handleMovePointerUp);
+    this.controls.enabled =
+      !this.currentState.frozenView && this.interactionMode !== 'draw';
+    this.emitMove(drag.id, drag.currentOffset, true);
+    this.requestRender();
+  };
+
+  private emitMove(itemId: string, offset: ItemOffset, final: boolean) {
+    if (final) {
+      if (this.moveRafId) {
+        cancelAnimationFrame(this.moveRafId);
+        this.moveRafId = 0;
+      }
+      this.pendingMoveEmit = null;
+      this.onMoveItemCb?.(itemId, offset, true);
+      return;
+    }
+    this.pendingMoveEmit = { id: itemId, offset };
+    if (this.moveRafId) return;
+    this.moveRafId = requestAnimationFrame(() => {
+      this.moveRafId = 0;
+      const pending = this.pendingMoveEmit;
+      this.pendingMoveEmit = null;
+      if (pending) this.onMoveItemCb?.(pending.id, pending.offset, false);
+    });
+  }
+
+  private applyItemOffset(itemId: string, offset: ItemOffset) {
+    this.moveRoots.forEach((root) => {
+      if (root.id !== itemId) return;
+      root.obj.position.x = root.baseX + offset.x;
+      root.obj.position.z = root.baseZ + offset.z;
+    });
+  }
+
+  private applyItemOffsets(state: ConfiguratorState) {
+    this.moveRoots.forEach((root) => {
+      const off = itemOffsetOf(state, root.id);
+      root.obj.position.x = root.baseX + off.x;
+      root.obj.position.z = root.baseZ + off.z;
+    });
+  }
+
+  /** Tag every movable root after a build and remember its base position. */
+  private collectMoveTargets() {
+    this.moveRoots = [];
+    const visit = (obj: THREE.Object3D) => {
+      const id = obj.userData.moveId as string | undefined;
+      if (id) {
+        this.moveRoots.push({
+          id,
+          obj,
+          baseX: obj.position.x,
+          baseZ: obj.position.z,
+        });
+      }
+      obj.children.forEach(visit);
+    };
+    this.modelGroup.children.forEach((child) => {
+      if (!child.userData.moveId) child.userData.moveId = PIECE_MOVE_ID;
+      visit(child);
+    });
+  }
+
+  private updateMoveHalo() {
+    const id = this.currentState.selectedMoveItemId;
+    if (!id || !this.currentState.hasPiece || this.uploadedPhoto) {
+      if (this.moveHalo) this.moveHalo.visible = false;
+      return;
+    }
+    const roots = this.moveRoots.filter((root) => root.id === id);
+    if (!roots.length) {
+      if (this.moveHalo) this.moveHalo.visible = false;
+      return;
+    }
+    this.modelGroup.updateMatrixWorld(true);
+    const box = new THREE.Box3();
+    roots.forEach((root) => box.expandByObject(root.obj));
+    if (box.isEmpty()) {
+      if (this.moveHalo) this.moveHalo.visible = false;
+      return;
+    }
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    if (!this.moveHalo) {
+      const halo = new THREE.Group();
+      const fill = new THREE.Mesh(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshBasicMaterial({
+          color: 0xe8a317,
+          transparent: true,
+          opacity: 0.18,
+          depthWrite: false,
+        }),
+      );
+      const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+        new THREE.LineBasicMaterial({ color: 0xfbbf24 }),
+      );
+      halo.add(fill, edges);
+      this.scene.add(halo);
+      this.moveHalo = halo;
+    }
+    this.moveHalo.visible = true;
+    this.moveHalo.position.copy(center);
+    this.moveHalo.scale.set(
+      Math.max(0.12, size.x * 1.06),
+      Math.max(0.12, size.y * 1.04),
+      Math.max(0.12, size.z * 1.06),
+    );
+    this.requestRender();
+  }
+
+  /** True when nothing but a moved/selected item changed, so no rebuild is needed. */
+  private onlyMoveChanged(
+    prev: ConfiguratorState,
+    next: ConfiguratorState,
+  ): boolean {
+    const keys = new Set<string>([
+      ...Object.keys(prev),
+      ...Object.keys(next),
+    ]);
+    for (const key of keys) {
+      if (key === 'itemOffsets' || key === 'selectedMoveItemId') continue;
+      if (
+        (prev as unknown as Record<string, unknown>)[key] !==
+        (next as unknown as Record<string, unknown>)[key]
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
 
   private handleContextLost = (e: Event) => {
     e.preventDefault();
@@ -1632,66 +1896,101 @@ export class IronworksScene {
     topY: number,
     z: number,
   ) {
-    const g = this.modelGroup;
     const scrollMat = getArea('scrolls').main;
     const finMat = getArea('finials').main;
     const picketMat = getArea('pickets').main;
 
     if (state.decor.scrolls && state.style !== 'scroll') {
-      this.makeScroll(g, scrollMat, 1.0, cx - spanW * 0.22, cy, z, state.scrollStyle);
-      this.makeScroll(g, scrollMat, 1.0, cx + spanW * 0.22, cy, z, state.scrollStyle);
+      this.addDecorGroup('scrolls:0', (d) =>
+        this.makeScroll(d, scrollMat, 1.0, cx - spanW * 0.22, cy, z, state.scrollStyle),
+      );
+      this.addDecorGroup('scrolls:1', (d) =>
+        this.makeScroll(d, scrollMat, 1.0, cx + spanW * 0.22, cy, z, state.scrollStyle),
+      );
     }
     if (state.decor.rings) {
-      this.makeRing(g, scrollMat, 0.45, cx - spanW * 0.24, cy + 0.15, z);
-      this.makeRing(g, scrollMat, 0.45, cx + spanW * 0.24, cy + 0.15, z);
+      this.addDecorGroup('rings:0', (d) =>
+        this.makeRing(d, scrollMat, 0.45, cx - spanW * 0.24, cy + 0.15, z),
+      );
+      this.addDecorGroup('rings:1', (d) =>
+        this.makeRing(d, scrollMat, 0.45, cx + spanW * 0.24, cy + 0.15, z),
+      );
     }
     if (state.decor.leaves) {
-      this.makeBranch(g, scrollMat, cx - spanW * 0.28, cy - 0.55, z, Math.min(1.6, spanW * 0.32));
+      this.addDecorGroup('leaves:0', (d) =>
+        this.makeBranch(d, scrollMat, cx - spanW * 0.28, cy - 0.55, z, Math.min(1.6, spanW * 0.32)),
+      );
     }
     if (state.decor.medallion) {
-      this.makeMedallion(g, scrollMat, 0.5, cx, cy + 0.1, z);
+      this.addDecorGroup('medallion:0', (d) =>
+        this.makeMedallion(d, scrollMat, 0.5, cx, cy + 0.1, z),
+      );
     }
     if (state.decor.rosettes) {
-      this.makeRosette(g, scrollMat, 0.4, cx - spanW * 0.26, cy + 0.45, z);
-      this.makeRosette(g, scrollMat, 0.4, cx + spanW * 0.26, cy + 0.45, z);
+      this.addDecorGroup('rosettes:0', (d) =>
+        this.makeRosette(d, scrollMat, 0.4, cx - spanW * 0.26, cy + 0.45, z),
+      );
+      this.addDecorGroup('rosettes:1', (d) =>
+        this.makeRosette(d, scrollMat, 0.4, cx + spanW * 0.26, cy + 0.45, z),
+      );
     }
     if (state.decor.baskets) {
-      this.makeBasket(g, picketMat, cx - spanW * 0.16, cy, z * 0.5);
-      this.makeBasket(g, picketMat, cx + spanW * 0.16, cy, z * 0.5);
+      this.addDecorGroup('baskets:0', (d) =>
+        this.makeBasket(d, picketMat, cx - spanW * 0.16, cy, z * 0.5),
+      );
+      this.addDecorGroup('baskets:1', (d) =>
+        this.makeBasket(d, picketMat, cx + spanW * 0.16, cy, z * 0.5),
+      );
     }
     if (state.decor.twistedBars) {
       const barH = Math.max(1.5, state.height - 1.0);
-      [-spanW * 0.32, 0, spanW * 0.32].forEach((ox) => {
-        this.makeTwistedBar(g, picketMat, barH, cx + ox, cy, z * 0.4);
+      [-spanW * 0.32, 0, spanW * 0.32].forEach((ox, i) => {
+        this.addDecorGroup(`twistedBars:${i}`, (d) =>
+          this.makeTwistedBar(d, picketMat, barH, cx + ox, cy, z * 0.4),
+        );
       });
     }
     if (state.decor.spearheadFinials) {
       const count = Math.max(3, Math.min(13, Math.round(spanW * 1.1)));
       for (let i = 0; i < count; i++) {
         const sx = cx - spanW * 0.44 + (i * spanW * 0.88) / Math.max(1, count - 1);
-        const cone = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.42, 12), finMat);
-        cone.position.set(sx, topY + 0.21, 0);
-        cone.castShadow = true;
-        this.tagArea(cone, 'finials');
-        g.add(cone);
+        this.addDecorGroup(`spearheadFinials:${i}`, (d) => {
+          const cone = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.42, 12), finMat);
+          cone.position.set(sx, topY + 0.21, 0);
+          cone.castShadow = true;
+          this.tagArea(cone, 'finials');
+          d.add(cone);
+        });
       }
     }
     if (state.decor.fleurDeLis) {
-      this.makeFleurDeLis(g, finMat, cx, topY, 0);
+      this.addDecorGroup('fleurDeLis:0', (d) =>
+        this.makeFleurDeLis(d, finMat, cx, topY, 0),
+      );
       if (spanW > 5) {
-        this.makeFleurDeLis(g, finMat, cx - spanW * 0.35, topY, 0);
-        this.makeFleurDeLis(g, finMat, cx + spanW * 0.35, topY, 0);
+        this.addDecorGroup('fleurDeLis:1', (d) =>
+          this.makeFleurDeLis(d, finMat, cx - spanW * 0.35, topY, 0),
+        );
+        this.addDecorGroup('fleurDeLis:2', (d) =>
+          this.makeFleurDeLis(d, finMat, cx + spanW * 0.35, topY, 0),
+        );
       }
     }
     if (state.decor.collars) {
-      [-spanW * 0.24, 0, spanW * 0.24].forEach((ox) => {
-        this.addBox(g, finMat, 'finials', 0.32, 0.22, 0.26, cx + ox, cy + 0.45, z * 0.35);
-        this.addBox(g, finMat, 'finials', 0.32, 0.22, 0.26, cx + ox, cy - 0.45, z * 0.35);
+      [-spanW * 0.24, 0, spanW * 0.24].forEach((ox, i) => {
+        this.addDecorGroup(`collars:${i}`, (d) => {
+          this.addBox(d, finMat, 'finials', 0.32, 0.22, 0.26, cx + ox, cy + 0.45, z * 0.35);
+          this.addBox(d, finMat, 'finials', 0.32, 0.22, 0.26, cx + ox, cy - 0.45, z * 0.35);
+        });
       });
     }
     if (state.decor.leafSprays) {
-      this.makeBranch(g, scrollMat, cx + spanW * 0.14, cy - 0.65, z, 1.3);
-      this.makeLeaf(g, scrollMat, 0.35, cx + spanW * 0.1, cy + 0.25, z, -0.5);
+      this.addDecorGroup('leafSprays:0', (d) =>
+        this.makeBranch(d, scrollMat, cx + spanW * 0.14, cy - 0.65, z, 1.3),
+      );
+      this.addDecorGroup('leafSprays:1', (d) =>
+        this.makeLeaf(d, scrollMat, 0.35, cx + spanW * 0.1, cy + 0.25, z, -0.5),
+      );
     }
 
     // Multi-select King Architectural & IMS Leaf Catalog selections
@@ -1705,8 +2004,19 @@ export class IronworksScene {
         const lx = cx - leafSpan / 2 + frac * leafSpan;
         const ly = cy + (idx % 2 === 0 ? 0.22 : -0.22);
         const tilt = idx % 2 === 0 ? 0.22 : -0.22;
-        this.makeCatalogLeaf(g, scrollMat, spec.shapeKind, 0.42, lx, ly, z + 0.04, tilt);
+        this.addDecorGroup(`catalogLeaf:${idx}`, (d) =>
+          this.makeCatalogLeaf(d, scrollMat, spec.shapeKind, 0.42, lx, ly, z + 0.04, tilt),
+        );
       });
+    }
+  }
+
+  private addDecorGroup(key: string, build: (group: THREE.Group) => void) {
+    const group = new THREE.Group();
+    build(group);
+    if (group.children.length > 0) {
+      group.userData.moveId = `decor:${key}`;
+      this.modelGroup.add(group);
     }
   }
 
@@ -1914,7 +2224,11 @@ export class IronworksScene {
       accents.forEach((acc, aIdx) => {
         const ay =
           count === 1 ? 0 : -spanY / 2 + (aIdx * spanY) / Math.max(1, count - 1);
-        this.renderPicketAccent(accentGroup, finialMat, acc, t, ay);
+        // One wrapper per accent so each accent can be moved on its own.
+        const one = new THREE.Group();
+        this.renderPicketAccent(one, finialMat, acc, t, ay);
+        one.userData.moveId = `accent:${picketIndex ?? 0}:${aIdx}`;
+        accentGroup.add(one);
       });
       unitGroup.add(accentGroup);
     }
@@ -1944,6 +2258,7 @@ export class IronworksScene {
           child.userData.partArea = 'pickets';
         }
       });
+      unitGroup.userData.moveId = `picket:${picketIndex}`;
     }
 
     parent.add(unitGroup);
@@ -2681,6 +2996,7 @@ export class IronworksScene {
   }
 
   public update(nextState: ConfiguratorState) {
+    const prevState = this.currentState;
     const pieceChanged =
       Boolean(nextState.hasPiece) !== Boolean(this.currentState.hasPiece) ||
       nextState.piece !== this.currentState.piece ||
@@ -2710,6 +3026,21 @@ export class IronworksScene {
       } else {
         this.stopLoop();
       }
+    }
+
+    // Dragging only changes item offsets / the selected item: reposition the
+    // existing meshes instead of rebuilding the whole piece on every frame.
+    if (
+      !this.uploadedPhoto &&
+      prevState !== nextState &&
+      this.onlyMoveChanged(prevState, nextState)
+    ) {
+      this.applyItemOffsets(nextState);
+      this.updateMoveHalo();
+      if (!this.controls.autoRotate) {
+        this.requestRender();
+      }
+      return;
     }
 
     // Never reframe camera if 3D view is frozen!
@@ -2812,6 +3143,8 @@ export class IronworksScene {
     reframe: boolean,
   ) {
     this.disposeGroup(this.modelGroup);
+    this.moveRoots = [];
+    if (this.moveHalo) this.moveHalo.visible = false;
 
     const maxSpan = 7.6;
     const planeW =
@@ -2881,6 +3214,7 @@ export class IronworksScene {
 
   private buildPiece(state: ConfiguratorState, reframe = true) {
     this.disposeGroup(this.modelGroup);
+    this.moveRoots = [];
     if (!state.hasPiece) {
       this.modelGroup.rotation.y = 0;
       if (reframe && !state.frozenView) {
@@ -2888,6 +3222,7 @@ export class IronworksScene {
         this.controls.target.set(0, 1.5, 0);
         this.controls.update();
       }
+      this.updateMoveHalo();
       return;
     }
     const getArea = this.getAreaMatResolver(state);
@@ -2900,6 +3235,9 @@ export class IronworksScene {
     else if (state.piece === 'patio-cover') this.buildPatioCover(state, getArea);
 
     this.modelGroup.rotation.y = 0;
+    this.collectMoveTargets();
+    this.applyItemOffsets(state);
+    this.updateMoveHalo();
     if (reframe) this.frameCamera();
   }
 
@@ -3216,6 +3554,15 @@ export class IronworksScene {
       'webglcontextrestored',
       this.handleContextRestored,
     );
+    this.canvas.parentElement?.removeEventListener(
+      'pointerdown',
+      this.handleMovePointerDown,
+      true,
+    );
+    window.removeEventListener('pointermove', this.handleMovePointerMove);
+    window.removeEventListener('pointerup', this.handleMovePointerUp);
+    window.removeEventListener('pointercancel', this.handleMovePointerUp);
+    if (this.moveRafId) cancelAnimationFrame(this.moveRafId);
     this.disposeGroup(this.modelGroup);
     this.scene.traverse((o) => {
       if ((o as THREE.Mesh).geometry) {

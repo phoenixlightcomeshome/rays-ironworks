@@ -68,6 +68,7 @@ import {
   FinialType,
   INFILL_PATTERNS,
   INITIAL_CONFIG,
+  ItemOffset,
   SAMPLE_GATE_CONFIG,
   InfillPatternType,
   LEAF_CATALOG,
@@ -97,7 +98,10 @@ import {
   describeConfig,
   dimsText,
   formatFeetInches,
+  formatItemOffset,
   getActiveSupplierSpecs,
+  itemOffsetOf,
+  moveItemLabel,
   getEffectivePicketSizeLabel,
   getPicketLayoutStats,
 } from '../types/configurator';
@@ -116,7 +120,9 @@ import {
   drawIsometricBlueprint,
   drawMaterialCutListSchematic,
   drawTechnicalDrawing,
+  getBlueprintMoveScale,
   getUploadedPhoto2DRect,
+  hitTestBlueprintMoveItem,
   hitTestBlueprintPicket,
 } from '../utils/blueprintRenderer';
 import {
@@ -324,6 +330,16 @@ export function DesignStudio3D({
     startNorm: [number, number];
     orig: PhotoDimension;
   } | null>(null);
+  const move2DDragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startNorm: [number, number];
+    startOffset: ItemOffset;
+  } | null>(null);
+  const move2DRafRef = useRef(0);
+  const move2DPendingRef = useRef<{ id: string; offset: ItemOffset } | null>(
+    null,
+  );
   const techCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isoCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cutListCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -411,6 +427,19 @@ export function DesignStudio3D({
         },
         onPhotoLoadError: (message) => {
           setStatus({ text: message, kind: 'warn' });
+        },
+        onMoveItem: (itemId, offset, final) => {
+          setConfig((prev) => ({
+            ...prev,
+            itemOffsets: { ...prev.itemOffsets, [itemId]: offset },
+            selectedMoveItemId: itemId,
+          }));
+          if (final) {
+            setStatus({
+              text: `${moveItemLabel(itemId)} moved ${formatItemOffset(offset)} from its original spot.`,
+              kind: 'ok',
+            });
+          }
         },
       });
       sceneRef.current = instance;
@@ -1327,6 +1356,20 @@ export function DesignStudio3D({
       return;
     }
 
+    if (interactionMode === 'move' && !uploadedPhoto) {
+      const itemId = hitTestBlueprintMoveItem(pt[0], pt[1]);
+      if (!itemId) return;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      move2DDragRef.current = {
+        id: itemId,
+        pointerId: e.pointerId,
+        startNorm: pt,
+        startOffset: itemOffsetOf(config, itemId),
+      };
+      setConfig((prev) => ({ ...prev, selectedMoveItemId: itemId }));
+      return;
+    }
+
     if (uploadedPhoto) {
       if (e.isPrimary && (photo2DMode === 'add' || photo2DMode === 'calibrate')) {
         canvas2dTapRef.current = {
@@ -1349,6 +1392,37 @@ export function DesignStudio3D({
   };
 
   const handle2DCanvasMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    const moveDrag = move2DDragRef.current;
+    if (moveDrag) {
+      const pt = getCanvasNormPos(blueprintCanvasRef.current, e);
+      if (!pt) return;
+      const pxPerFt = Math.max(1, getBlueprintMoveScale());
+      const dxPx = (pt[0] - moveDrag.startNorm[0]) * 1100;
+      const dyPx = (pt[1] - moveDrag.startNorm[1]) * 740;
+      const offset: ItemOffset = {
+        x: moveDrag.startOffset.x + dxPx / pxPerFt,
+        z: moveDrag.startOffset.z + dyPx / pxPerFt,
+      };
+      move2DPendingRef.current = { id: moveDrag.id, offset };
+      if (!move2DRafRef.current) {
+        move2DRafRef.current = requestAnimationFrame(() => {
+          move2DRafRef.current = 0;
+          const pending = move2DPendingRef.current;
+          move2DPendingRef.current = null;
+          if (!pending) return;
+          setConfig((prev) => ({
+            ...prev,
+            itemOffsets: {
+              ...prev.itemOffsets,
+              [pending.id]: pending.offset,
+            },
+            selectedMoveItemId: pending.id,
+          }));
+        });
+      }
+      return;
+    }
+
     if (!activeFreeStroke2D || interactionMode !== 'draw') return;
     const pt = getCanvasNormPos(blueprintCanvasRef.current, e);
     if (!pt) return;
@@ -1358,6 +1432,37 @@ export function DesignStudio3D({
   };
 
   const handle2DCanvasUp = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    const moveDrag = move2DDragRef.current;
+    if (moveDrag) {
+      move2DDragRef.current = null;
+      if (move2DRafRef.current) {
+        cancelAnimationFrame(move2DRafRef.current);
+        move2DRafRef.current = 0;
+      }
+      const pending = move2DPendingRef.current;
+      move2DPendingRef.current = null;
+      if (pending) {
+        setConfig((prev) => ({
+          ...prev,
+          itemOffsets: {
+            ...prev.itemOffsets,
+            [pending.id]: pending.offset,
+          },
+          selectedMoveItemId: pending.id,
+        }));
+        setStatus({
+          text: `${moveItemLabel(pending.id)} moved ${formatItemOffset(pending.offset)} from its original spot.`,
+          kind: 'ok',
+        });
+      } else {
+        setStatus({
+          text: `${moveItemLabel(moveDrag.id)} selected — drag it to move it.`,
+          kind: 'ok',
+        });
+      }
+      return;
+    }
+
     if (activeFreeStroke2D) {
       const finished = activeFreeStroke2D;
       setActiveFreeStroke2D(null);
@@ -3816,6 +3921,19 @@ export function DesignStudio3D({
                   )}
                   <button
                     type="button"
+                    aria-pressed={interactionMode === 'move'}
+                    onClick={() => setInteractionMode('move')}
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold border cursor-pointer ${
+                      interactionMode === 'move'
+                        ? 'bg-[#c9883d] text-[#141210] border-[#c9883d]'
+                        : 'bg-[#101012] text-[#cfc9bf] border-[#2a2a2e] hover:border-[#c9883d]/60'
+                    }`}
+                  >
+                    <Move className="w-3.5 h-3.5" aria-hidden="true" />
+                    Move
+                  </button>
+                  <button
+                    type="button"
                     aria-pressed={
                       interactionMode === 'select' ||
                       (is2DView && interactionMode === 'rotate')
@@ -3860,17 +3978,21 @@ export function DesignStudio3D({
                 </div>
 
                 <span className="text-[11px] text-[#a8a29a]">
-                  {interactionMode === 'draw'
+                  {interactionMode === 'move'
                     ? is2DView
-                      ? 'Drawing on 2D Blueprint'
-                      : 'Drawing over 3D View (rotation paused)'
-                    : interactionMode === 'accent'
-                      ? 'Tap a picket, then tap an accent button'
-                      : is2DView
-                        ? '2D Blueprint inspection'
-                        : config.frozenView
-                          ? '3D View Frozen'
-                          : 'Drag to rotate · Tap part to color'}
+                      ? 'Drag an item to move it · horizontal = left/right · vertical = front/back'
+                      : 'Drag an item to move it · drag empty space to rotate'
+                    : interactionMode === 'draw'
+                      ? is2DView
+                        ? 'Drawing on 2D Blueprint'
+                        : 'Drawing over 3D View (rotation paused)'
+                      : interactionMode === 'accent'
+                        ? 'Tap a picket, then tap an accent button'
+                        : is2DView
+                          ? '2D Blueprint inspection'
+                          : config.frozenView
+                            ? '3D View Frozen'
+                            : 'Drag to rotate · Tap part to color'}
                 </span>
               </div>
 

@@ -8,17 +8,21 @@ import {
   PART_AREA_LABELS,
   PICKET_FORM_STYLES,
   PIECES,
+  PIECE_MOVE_ID,
   POWDERS,
   PartArea,
   PicketAccentType,
   SCROLL_STYLES,
   formatFinialLabel,
+  formatItemOffset,
   formatMaterialLabel,
   formatPostStyleLabel,
   getActiveSupplierSpecs,
   getEffectivePicketInches,
   getEffectivePicketSizeLabel,
   getPicketLayoutStats,
+  itemOffsetOf,
+  moveItemLabel,
 } from '../types/configurator';
 import {
   UploadedPhoto3D,
@@ -35,6 +39,52 @@ const W = 1100;
 const H = 740;
 
 const cachedSignImages = new Map<string, HTMLImageElement>();
+
+/** Screen-space hit regions for items that can be dragged in the 2D Blueprint. */
+export interface BlueprintMoveTarget {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+let blueprintMoveTargets: BlueprintMoveTarget[] = [];
+let blueprintMoveScale = 12;
+
+export function getBlueprintMoveTargets(): BlueprintMoveTarget[] {
+  return blueprintMoveTargets;
+}
+
+/** Pixels per foot used by the current 2D Blueprint elevation. */
+export function getBlueprintMoveScale(): number {
+  return blueprintMoveScale;
+}
+
+export function hitTestBlueprintMoveItem(
+  normX: number,
+  normY: number,
+): string | null {
+  const px = normX * W;
+  const py = normY * H;
+  for (let i = blueprintMoveTargets.length - 1; i >= 0; i--) {
+    const t = blueprintMoveTargets[i];
+    if (px >= t.x && px <= t.x + t.w && py >= t.y && py <= t.y + t.h) {
+      return t.id;
+    }
+  }
+  return null;
+}
+
+function registerMoveTarget(
+  id: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+) {
+  blueprintMoveTargets.push({ id, x, y, w, h });
+}
 
 function getLoadedImage(url: string): HTMLImageElement | null {
   const existing = cachedSignImages.get(url);
@@ -609,13 +659,19 @@ export function hitTestBlueprintPicket(
     const leftBayX = x0;
     const rightBayX = x0 + bayW + gap;
     for (let i = 0; i < layout.perLeafPickets; i++) {
-      const pxL = leftBayX + ((i + 0.5) * bayW) / layout.perLeafPickets;
+      const pxL =
+        leftBayX +
+        ((i + 0.5) * bayW) / layout.perLeafPickets +
+        itemOffsetOf(state, `picket:${i}`).x * scale;
       const dL = Math.abs(pxClick - pxL);
       if (dL < bestDist) {
         bestDist = dL;
         bestIdx = i;
       }
-      const pxR = rightBayX + ((i + 0.5) * bayW) / layout.perLeafPickets;
+      const pxR =
+        rightBayX +
+        ((i + 0.5) * bayW) / layout.perLeafPickets +
+        itemOffsetOf(state, `picket:${layout.perLeafPickets + i}`).x * scale;
       const dR = Math.abs(pxClick - pxR);
       if (dR < bestDist) {
         bestDist = dR;
@@ -624,7 +680,10 @@ export function hitTestBlueprintPicket(
     }
   } else {
     for (let i = 0; i < layout.totalPickets; i++) {
-      const px = x0 + ((i + 0.5) * w) / layout.totalPickets;
+      const px =
+        x0 +
+        ((i + 0.5) * w) / layout.totalPickets +
+        itemOffsetOf(state, `picket:${i}`).x * scale;
       const d = Math.abs(pxClick - px);
       if (d < bestDist) {
         bestDist = d;
@@ -1237,6 +1296,8 @@ export function drawBlueprint(
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
+  blueprintMoveTargets = [];
+
   if (uploadedPhoto) {
     drawUploadedPhotoBlueprint2D(ctx, state, uploadedPhoto, photoOverlay);
     return;
@@ -1576,7 +1637,15 @@ export function drawBlueprint(
 
     // vertical-pickets with picket style indicators, selection halo & accents
     const n = Math.max(2, Math.floor((fw * 12) / Math.max(2, state.picketSpacing)));
-    drawVerticalPicketsWithAccents(x0, innerTop, w, innerH, n, picketOffset);
+    drawVerticalPicketsWithAccents(
+      x0,
+      innerTop,
+      w,
+      innerH,
+      n,
+      picketOffset,
+      w / Math.max(0.5, fw),
+    );
   }
 
   function drawVerticalPicketsWithAccents(
@@ -1586,14 +1655,24 @@ export function drawBlueprint(
     innerH: number,
     n: number,
     picketOffset = 0,
+    pxPerFt = 12,
   ) {
     if (!ctx) return;
     const innerBot = innerTop + innerH;
     for (let p = 0; p < n; p++) {
       const globalIdx = picketOffset + p;
-      const px = x0 + ((p + 0.5) * w) / n;
+      const basePx = x0 + ((p + 0.5) * w) / n;
+      const picketOff = itemOffsetOf(state, `picket:${globalIdx}`);
+      const px = basePx + picketOff.x * pxPerFt;
       const isSel = state.selectedPicketIndex === globalIdx;
       const accents = state.picketAccents?.[globalIdx] || [];
+      registerMoveTarget(
+        `picket:${globalIdx}`,
+        px - Math.max(5, w / n / 2),
+        innerTop,
+        Math.max(10, w / n),
+        innerH,
+      );
 
       if (isSel) {
         ctx.save();
@@ -1654,11 +1733,23 @@ export function drawBlueprint(
       if (accents.length > 0) {
         const spanY = Math.min(innerH * 0.58, accents.length * 22);
         accents.forEach((acc, aIdx) => {
+          const accentOff = itemOffsetOf(
+            state,
+            `accent:${globalIdx}:${aIdx}`,
+          );
           const ay =
             accents.length === 1
               ? innerTop + innerH * 0.5
               : innerTop + innerH * 0.5 - spanY / 2 + (aIdx * spanY) / Math.max(1, accents.length - 1);
-          draw2DPicketAccentSymbol(ctx, px, ay, acc);
+          const ax = px + accentOff.x * pxPerFt;
+          draw2DPicketAccentSymbol(ctx, ax, ay, acc);
+          registerMoveTarget(
+            `accent:${globalIdx}:${aIdx}`,
+            ax - 10,
+            ay - 10,
+            20,
+            20,
+          );
         });
       }
     }
@@ -1714,14 +1805,17 @@ export function drawBlueprint(
       dz: number,
     ) => {
       if (!ctx) return;
-      const p000 = proj(x0, y0, z0);
-      const p100 = proj(x0 + dx, y0, z0);
-      const p110 = proj(x0 + dx, y0 + dy, z0);
-      const p010 = proj(x0, y0 + dy, z0);
-      const p001 = proj(x0, y0, z0 + dz);
-      const p101 = proj(x0 + dx, y0, z0 + dz);
-      const p111 = proj(x0 + dx, y0 + dy, z0 + dz);
-      const p011 = proj(x0, y0 + dy, z0 + dz);
+      const pOff = itemOffsetOf(state, PIECE_MOVE_ID);
+      const ox = x0 + pOff.x;
+      const oz = z0 + pOff.z;
+      const p000 = proj(ox, y0, oz);
+      const p100 = proj(ox + dx, y0, oz);
+      const p110 = proj(ox + dx, y0 + dy, oz);
+      const p010 = proj(ox, y0 + dy, oz);
+      const p001 = proj(ox, y0, oz + dz);
+      const p101 = proj(ox + dx, y0, oz + dz);
+      const p111 = proj(ox + dx, y0 + dy, oz + dz);
+      const p011 = proj(ox, y0 + dy, oz + dz);
       const seg = (a: [number, number], b: [number, number]) => {
         ctx.beginPath();
         ctx.moveTo(a[0], a[1]);
@@ -1962,6 +2056,9 @@ export function drawBlueprint(
     Math.min((bx - ax) / Math.max(fw, 1), (gy - top) / Math.max(fh * 1.25, 1)),
     6,
   );
+  blueprintMoveScale = scale;
+  const pieceOffset = itemOffsetOf(state, PIECE_MOVE_ID);
+  const pieceDx = pieceOffset.x * scale;
 
   ctx.fillStyle = '#a8c4e0';
   ctx.font = "700 12px Oswald, 'Arial Narrow', sans-serif";
@@ -1981,36 +2078,38 @@ export function drawBlueprint(
     const h = fh * scale;
     const x0 = (ax + bx - w) / 2;
     const y0 = gy - h;
+    const fx = x0 + pieceDx;
     ctx.strokeStyle = '#FFFFFF';
     ctx.lineWidth = 2.5;
-    ctx.strokeRect(x0, y0, w, 10);
-    ctx.strokeRect(x0, gy - 10, w, 10);
+    ctx.strokeRect(fx, y0, w, 10);
+    ctx.strokeRect(fx, gy - 10, w, 10);
     const nSeg = Math.max(1, Math.round(fw / state.postSpacing));
     const step = w / nSeg;
     ctx.lineWidth = 2;
     for (let i = 0; i <= nSeg; i++) {
-      ctx.strokeRect(x0 + i * step - 5, y0, 10, h);
+      ctx.strokeRect(fx + i * step - 5, y0, 10, h);
     }
     const innerTop = y0 + 10;
     const innerBot = gy - 10;
     const innerH = innerBot - innerTop;
     drawBlueprintInfill(x0, innerTop, w, innerH, fw, fh);
     if (nSeg >= 1) {
-      dimH(x0, x0 + step, gy + 24, `Post c/c: ${ftIn(fw / nSeg)}`);
+      dimH(fx, fx + step, gy + 24, `Post c/c: ${ftIn(fw / nSeg)}`);
     }
-    box2 = { x0, x1: x0 + w, y0, y1: gy };
+    box2 = { x0: fx, x1: fx + w, y0, y1: gy };
   } else if (state.piece === 'sculpture-base') {
     const w = fw * scale;
     const h = fh * scale;
     const x0 = (ax + bx - w) / 2;
     const y0 = gy - h;
+    const fx = x0 + pieceDx;
     ctx.strokeStyle = '#FFFFFF';
     ctx.lineWidth = 2.5;
-    ctx.strokeRect(x0 - 10, gy - 12, w + 20, 12);
+    ctx.strokeRect(fx - 10, gy - 12, w + 20, 12);
     if (state.style === 'column') {
       ctx.beginPath();
       ctx.ellipse(
-        (ax + bx) / 2,
+        (ax + bx) / 2 + pieceDx,
         y0 + 12 + (h - 24) / 2,
         w * 0.42,
         (h - 24) / 2,
@@ -2021,17 +2120,17 @@ export function drawBlueprint(
       ctx.stroke();
     } else if (state.style === 'tapered') {
       ctx.beginPath();
-      ctx.moveTo(x0 + w * 0.08, gy - 12);
-      ctx.lineTo(x0 + w * 0.2, y0 + 12);
-      ctx.lineTo(x0 + w * 0.8, y0 + 12);
-      ctx.lineTo(x0 + w * 0.92, gy - 12);
+      ctx.moveTo(fx + w * 0.08, gy - 12);
+      ctx.lineTo(fx + w * 0.2, y0 + 12);
+      ctx.lineTo(fx + w * 0.8, y0 + 12);
+      ctx.lineTo(fx + w * 0.92, gy - 12);
       ctx.closePath();
       ctx.stroke();
     } else {
-      ctx.strokeRect(x0, y0 + 12, w, h - 24);
+      ctx.strokeRect(fx, y0 + 12, w, h - 24);
     }
-    ctx.strokeRect(x0 - 6, y0, w + 12, 12);
-    const cx = (ax + bx) / 2;
+    ctx.strokeRect(fx - 6, y0, w + 12, 12);
+    const cx = (ax + bx) / 2 + pieceDx;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(cx, y0 - h * 0.14, h * 0.16, 0, Math.PI * 1.2);
@@ -2042,55 +2141,57 @@ export function drawBlueprint(
     ctx.beginPath();
     ctx.arc(cx, y0 - h * 0.42, h * 0.045, 0, Math.PI * 2);
     ctx.stroke();
-    box2 = { x0, x1: x0 + w, y0: y0 - h * 0.4, y1: gy };
+    box2 = { x0: fx, x1: fx + w, y0: y0 - h * 0.4, y1: gy };
   } else if (state.piece === 'sign-frame') {
     const w = fw * scale;
     const h = fh * scale;
     const x0 = (ax + bx - w) / 2;
     const y0 = gy - h;
+    const fx = x0 + pieceDx;
     ctx.strokeStyle = '#FFFFFF';
     ctx.lineWidth = 2.5;
-    ctx.strokeRect(x0 - 14, y0, 12, h);
-    ctx.strokeRect(x0 + w + 2, y0, 12, h);
+    ctx.strokeRect(fx - 14, y0, 12, h);
+    ctx.strokeRect(fx + w + 2, y0, 12, h);
     const panelH = h * 0.62;
     const panelY = y0 + h * 0.2;
-    ctx.strokeRect(x0, panelY, w, panelH);
+    ctx.strokeRect(fx, panelY, w, panelH);
     ctx.lineWidth = 1.2;
-    ctx.strokeRect(x0 + 10, panelY + 10, w - 20, panelH - 20);
+    ctx.strokeRect(fx + 10, panelY + 10, w - 20, panelH - 20);
 
-    drawSignPanelContent2D(ctx, state, x0, panelY, w, panelH, false);
+    drawSignPanelContent2D(ctx, state, fx, panelY, w, panelH, false);
 
     if (state.style === 'arch') {
       ctx.strokeStyle = '#FFFFFF';
       ctx.lineWidth = 2.5;
       ctx.beginPath();
-      ctx.arc(x0 + w / 2, panelY, w / 2, Math.PI, 0);
+      ctx.arc(fx + w / 2, panelY, w / 2, Math.PI, 0);
       ctx.stroke();
     }
-    box2 = { x0, x1: x0 + w, y0, y1: gy };
+    box2 = { x0: fx, x1: fx + w, y0, y1: gy };
   } else if (state.piece === 'patio-cover') {
     const w = fw * scale;
     const h = fh * scale;
     const x0 = (ax + bx - w) / 2;
     const y0 = gy - h;
+    const fx = x0 + pieceDx;
     ctx.strokeStyle = '#FFFFFF';
     ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.moveTo(x0 - 14, y0 + 18);
-    ctx.lineTo(x0 + w + 14, y0 + 4);
+    ctx.moveTo(fx - 14, y0 + 18);
+    ctx.lineTo(fx + w + 14, y0 + 4);
     ctx.stroke();
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(x0 - 14, y0 + 30);
-    ctx.lineTo(x0 + w + 14, y0 + 16);
+    ctx.moveTo(fx - 14, y0 + 30);
+    ctx.lineTo(fx + w + 14, y0 + 16);
     ctx.stroke();
     ctx.lineWidth = 2.5;
-    ctx.strokeRect(x0 + 6, y0 + 30, 12, h - 30);
-    ctx.strokeRect(x0 + w - 18, y0 + 16, 12, h - 16);
+    ctx.strokeRect(fx + 6, y0 + 30, 12, h - 30);
+    ctx.strokeRect(fx + w - 18, y0 + 16, 12, h - 16);
     if (fw > 14) {
-      ctx.strokeRect(x0 + w / 2 - 6, y0 + 23, 12, h - 23);
+      ctx.strokeRect(fx + w / 2 - 6, y0 + 23, 12, h - 23);
     }
-    box2 = { x0, x1: x0 + w, y0, y1: gy };
+    box2 = { x0: fx, x1: fx + w, y0, y1: gy };
   } else {
     const w = fw * scale;
     const h = fh * scale;
@@ -2098,10 +2199,11 @@ export function drawBlueprint(
     const y0 = gy - h;
     ctx.strokeStyle = '#FFFFFF';
     ctx.lineWidth = 2.5;
-    ctx.strokeRect(x0 - 12, y0, 12, h);
-    ctx.strokeRect(x0 + w, y0, 12, h);
-    ctx.strokeRect(x0, y0, w, 12);
-    ctx.strokeRect(x0, y0 + h - 12, w, 12);
+    const fx = x0 + pieceDx;
+    ctx.strokeRect(fx - 12, y0, 12, h);
+    ctx.strokeRect(fx + w, y0, 12, h);
+    ctx.strokeRect(fx, y0, w, 12);
+    ctx.strokeRect(fx, y0 + h - 12, w, 12);
     const innerTop = y0 + 12;
     const innerH = h - 24;
     if (state.leaves === 'double') {
@@ -2115,8 +2217,8 @@ export function drawBlueprint(
       ctx.lineWidth = 2;
       ctx.setLineDash([8, 6]);
       ctx.beginPath();
-      ctx.moveTo(x0 + w / 2, y0);
-      ctx.lineTo(x0 + w / 2, gy);
+      ctx.moveTo(fx + w / 2, y0);
+      ctx.lineTo(fx + w / 2, gy);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.strokeStyle = '#FFFFFF';
@@ -2124,8 +2226,16 @@ export function drawBlueprint(
     } else {
       drawBlueprintInfill(x0, innerTop, w, innerH, fw, fh, 0);
     }
-    box2 = { x0, x1: x0 + w, y0, y1: gy };
+    box2 = { x0: fx, x1: fx + w, y0, y1: gy };
   }
+
+  registerMoveTarget(
+    PIECE_MOVE_ID,
+    box2.x0,
+    box2.y0,
+    box2.x1 - box2.x0,
+    box2.y1 - box2.y0,
+  );
 
   // Optional Sign Plaque Overlay on non-sign-frame pieces
   if (state.showSign && state.piece !== 'sign-frame') {
@@ -2152,62 +2262,107 @@ export function drawBlueprint(
   ctx.save();
   ctx.strokeStyle = '#fde68a';
   ctx.lineWidth = 1.2;
+  const decorX = (key: string, x: number) =>
+    x + itemOffsetOf(state, `decor:${key}`).x * scale;
   if (state.decor.scrolls && state.style !== 'scroll') {
-    drawScrollSymbol(midX - boxW * 0.22, midY, Math.min(20, boxH * 0.18));
-    drawScrollSymbol(midX + boxW * 0.22, midY, Math.min(20, boxH * 0.18));
+    [-1, 1].forEach((dir, i) => {
+      const sx = decorX(`scrolls:${i}`, midX + dir * boxW * 0.22);
+      drawScrollSymbol(sx, midY, Math.min(20, boxH * 0.18));
+      registerMoveTarget(`decor:scrolls:${i}`, sx - 22, midY - 22, 44, 44);
+    });
+  }
+  if (state.decor.rings) {
+    [-1, 1].forEach((dir, i) => {
+      const sx = decorX(`rings:${i}`, midX + dir * boxW * 0.24);
+      ctx.beginPath();
+      ctx.arc(sx, midY - boxH * 0.05, 9, 0, Math.PI * 2);
+      ctx.stroke();
+      registerMoveTarget(`decor:rings:${i}`, sx - 11, midY - boxH * 0.05 - 11, 22, 22);
+    });
+  }
+  if (state.decor.leaves) {
+    const sx = decorX('leaves:0', midX - boxW * 0.28);
+    ctx.beginPath();
+    ctx.moveTo(sx, midY + 6);
+    ctx.quadraticCurveTo(sx + 10, midY - 14, sx + 26, midY - 22);
+    ctx.stroke();
+    registerMoveTarget('decor:leaves:0', sx - 6, midY - 30, 40, 44);
+  }
+  if (state.decor.medallion) {
+    const sx = decorX('medallion:0', midX);
+    ctx.beginPath();
+    ctx.arc(sx, midY - boxH * 0.08, 11, 0, Math.PI * 2);
+    ctx.stroke();
+    registerMoveTarget('decor:medallion:0', sx - 13, midY - boxH * 0.08 - 13, 26, 26);
   }
   if (state.decor.rosettes) {
-    [-boxW * 0.25, boxW * 0.25].forEach((ox) => {
+    [-1, 1].forEach((dir, i) => {
+      const sx = decorX(`rosettes:${i}`, midX + dir * boxW * 0.25);
       ctx.beginPath();
-      ctx.arc(midX + ox, midY - boxH * 0.1, 7, 0, Math.PI * 2);
+      ctx.arc(sx, midY - boxH * 0.1, 7, 0, Math.PI * 2);
       ctx.stroke();
+      registerMoveTarget(`decor:rosettes:${i}`, sx - 9, midY - boxH * 0.1 - 9, 18, 18);
     });
   }
   if (state.decor.baskets) {
-    [-boxW * 0.15, boxW * 0.15].forEach((ox) => {
-      ctx.strokeRect(midX + ox - 5, midY - 9, 10, 18);
+    [-1, 1].forEach((dir, i) => {
+      const sx = decorX(`baskets:${i}`, midX + dir * boxW * 0.15);
+      ctx.strokeRect(sx - 5, midY - 9, 10, 18);
+      registerMoveTarget(`decor:baskets:${i}`, sx - 7, midY - 11, 14, 22);
     });
   }
   if (state.decor.fleurDeLis) {
+    const sx = decorX('fleurDeLis:0', midX);
     ctx.beginPath();
-    ctx.moveTo(midX, box2.y0 - 10);
-    ctx.lineTo(midX - 5, box2.y0);
-    ctx.lineTo(midX + 5, box2.y0);
+    ctx.moveTo(sx, box2.y0 - 10);
+    ctx.lineTo(sx - 5, box2.y0);
+    ctx.lineTo(sx + 5, box2.y0);
     ctx.closePath();
     ctx.stroke();
+    registerMoveTarget('decor:fleurDeLis:0', sx - 8, box2.y0 - 14, 16, 18);
   }
   if (state.decor.spearheadFinials) {
     for (let i = 0; i < 5; i++) {
-      const sx = box2.x0 + ((i + 0.5) * boxW) / 5;
+      const sx = decorX(
+        `spearheadFinials:${i}`,
+        box2.x0 + ((i + 0.5) * boxW) / 5,
+      );
       ctx.beginPath();
       ctx.moveTo(sx, box2.y0 - 8);
       ctx.lineTo(sx - 3, box2.y0);
       ctx.lineTo(sx + 3, box2.y0);
       ctx.closePath();
       ctx.stroke();
+      registerMoveTarget(`decor:spearheadFinials:${i}`, sx - 6, box2.y0 - 12, 12, 14);
     }
   }
   if (state.decor.collars) {
-    [-boxW * 0.2, boxW * 0.2].forEach((ox) => {
+    [-1, 1].forEach((dir, i) => {
+      const sx = decorX(`collars:${i}`, midX + dir * boxW * 0.2);
       ctx.fillStyle = '#fde68a';
-      ctx.fillRect(midX + ox - 5, midY + boxH * 0.12, 10, 4);
+      ctx.fillRect(sx - 5, midY + boxH * 0.12, 10, 4);
+      registerMoveTarget(`decor:collars:${i}`, sx - 7, midY + boxH * 0.12 - 3, 14, 12);
     });
   }
   if (state.decor.twistedBars) {
     ctx.setLineDash([3, 3]);
-    [-boxW * 0.3, 0, boxW * 0.3].forEach((ox) => {
+    [-1, 0, 1].forEach((dir, i) => {
+      const sx = decorX(`twistedBars:${i}`, midX + dir * boxW * 0.3);
       ctx.beginPath();
-      ctx.moveTo(midX + ox, box2.y0 + 12);
-      ctx.lineTo(midX + ox, box2.y1 - 12);
+      ctx.moveTo(sx, box2.y0 + 12);
+      ctx.lineTo(sx, box2.y1 - 12);
       ctx.stroke();
+      registerMoveTarget(`decor:twistedBars:${i}`, sx - 6, box2.y0 + 12, 12, boxH - 24);
     });
     ctx.setLineDash([]);
   }
   if (state.decor.leafSprays) {
+    const sx = decorX('leafSprays:0', midX + boxW * 0.12);
     ctx.beginPath();
-    ctx.moveTo(midX + boxW * 0.12, midY + boxH * 0.15);
+    ctx.moveTo(sx, midY + boxH * 0.15);
     ctx.quadraticCurveTo(midX + boxW * 0.22, midY, midX + boxW * 0.3, midY - boxH * 0.1);
     ctx.stroke();
+    registerMoveTarget('decor:leafSprays:0', sx - 6, midY, boxW * 0.2, boxH * 0.2);
   }
 
   if (state.sampleArt?.useOutlineCut && state.sampleArt.cutSegments?.length) {
@@ -2224,6 +2379,37 @@ export function drawBlueprint(
     ctx.stroke();
   }
   ctx.restore();
+
+  // Highlight the item currently selected / being moved in Move mode
+  if (state.selectedMoveItemId) {
+    const target = blueprintMoveTargets.find(
+      (t) => t.id === state.selectedMoveItemId,
+    );
+    if (target) {
+      ctx.save();
+      ctx.strokeStyle = '#E8A317';
+      ctx.fillStyle = 'rgba(232,163,23,0.14)';
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([5, 4]);
+      ctx.fillRect(target.x, target.y, target.w, target.h);
+      ctx.strokeRect(target.x, target.y, target.w, target.h);
+      ctx.setLineDash([]);
+      const off = itemOffsetOf(state, state.selectedMoveItemId);
+      const tag = `${moveItemLabel(state.selectedMoveItemId)} · ${formatItemOffset(off)}`;
+      ctx.font = "600 11px 'Source Sans 3', sans-serif";
+      const tw = ctx.measureText(tag).width + 12;
+      const ty = Math.max(90, target.y - 24);
+      ctx.fillStyle = 'rgba(16,16,18,0.9)';
+      ctx.fillRect(target.x, ty, tw, 18);
+      ctx.strokeStyle = '#E8A317';
+      ctx.strokeRect(target.x, ty, tw, 18);
+      ctx.fillStyle = '#FDE68A';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(tag, target.x + 6, ty + 9);
+      ctx.restore();
+    }
+  }
 
   dimH(
     box2.x0,
@@ -3378,14 +3564,17 @@ export function drawIsometricBlueprint(
   ) => {
     ctx.save();
     ctx.strokeStyle = stroke;
-    const p000 = proj(x0, y0, z0);
-    const p100 = proj(x0 + dx, y0, z0);
-    const p110 = proj(x0 + dx, y0 + dy, z0);
-    const p010 = proj(x0, y0 + dy, z0);
-    const p001 = proj(x0, y0, z0 + dz);
-    const p101 = proj(x0 + dx, y0, z0 + dz);
-    const p111 = proj(x0 + dx, y0 + dy, z0 + dz);
-    const p011 = proj(x0, y0 + dy, z0 + dz);
+    const pOff = itemOffsetOf(state, PIECE_MOVE_ID);
+    const ox = x0 + pOff.x;
+    const oz = z0 + pOff.z;
+    const p000 = proj(ox, y0, oz);
+    const p100 = proj(ox + dx, y0, oz);
+    const p110 = proj(ox + dx, y0 + dy, oz);
+    const p010 = proj(ox, y0 + dy, oz);
+    const p001 = proj(ox, y0, oz + dz);
+    const p101 = proj(ox + dx, y0, oz + dz);
+    const p111 = proj(ox + dx, y0 + dy, oz + dz);
+    const p011 = proj(ox, y0 + dy, oz + dz);
     seg(p000, p100);
     seg(p100, p110);
     seg(p110, p010);
@@ -3429,15 +3618,22 @@ export function drawIsometricBlueprint(
     drawIsoBox(0, ph - 0.18, pd * 0.35, pw, 0.18, 0.3);
     drawIsoBox(0, 0.3, pd * 0.35, pw, 0.16, 0.24);
     for (let p = 0; p < picketStats.totalPickets; p++) {
-      const px = ((p + 0.5) * pw) / picketStats.totalPickets;
+      const pOff = itemOffsetOf(state, `picket:${p}`);
+      const px = ((p + 0.5) * pw) / picketStats.totalPickets + pOff.x;
+      const pz = pd * 0.5 + pOff.z;
       const isSel = state.selectedPicketIndex === p;
       ctx.strokeStyle = isSel ? '#E8A317' : 'rgba(255,255,255,0.82)';
       ctx.lineWidth = isSel ? 2.2 : 1.25;
-      seg(proj(px, 0.46, pd * 0.5), proj(px, ph - 0.18, pd * 0.5));
+      seg(proj(px, 0.46, pz), proj(px, ph - 0.18, pz));
       const accs = state.picketAccents?.[p] || [];
       accs.forEach((acc, ai) => {
+        const aOff = itemOffsetOf(state, `accent:${p}:${ai}`);
         const yfrac = accs.length === 1 ? 0.5 : 0.25 + (ai * 0.5) / Math.max(1, accs.length - 1);
-        const pt = proj(px, 0.46 + (ph - 0.64) * yfrac, pd * 0.5);
+        const pt = proj(
+          px + aOff.x,
+          0.46 + (ph - 0.64) * yfrac,
+          pz + aOff.z,
+        );
         draw2DPicketAccentSymbol(ctx, pt[0], pt[1], acc, 0.9);
       });
     }
@@ -3447,21 +3643,36 @@ export function drawIsometricBlueprint(
     drawIsoBox(0.35, 0.25, pd * 0.42, pw - 0.7, ph - 0.5, 0.2);
     if (state.piece === 'gate' && picketStats.supportsPickets) {
       for (let p = 0; p < picketStats.totalPickets; p++) {
-        const px = 0.35 + ((p + 0.5) * (pw - 0.7)) / picketStats.totalPickets;
+        const pOff = itemOffsetOf(state, `picket:${p}`);
+        const px =
+          0.35 +
+          ((p + 0.5) * (pw - 0.7)) / picketStats.totalPickets +
+          pOff.x;
+        const pz = pd * 0.52 + pOff.z;
         const isSel = state.selectedPicketIndex === p;
         ctx.strokeStyle = isSel ? '#E8A317' : 'rgba(255,255,255,0.82)';
         ctx.lineWidth = isSel ? 2.2 : 1.25;
-        seg(proj(px, 0.3, pd * 0.52), proj(px, ph - 0.3, pd * 0.52));
+        seg(proj(px, 0.3, pz), proj(px, ph - 0.3, pz));
         const accs = state.picketAccents?.[p] || [];
         accs.forEach((acc, ai) => {
+          const aOff = itemOffsetOf(state, `accent:${p}:${ai}`);
           const yfrac = accs.length === 1 ? 0.5 : 0.25 + (ai * 0.5) / Math.max(1, accs.length - 1);
-          const pt = proj(px, 0.3 + (ph - 0.6) * yfrac, pd * 0.52);
+          const pt = proj(
+            px + aOff.x,
+            0.3 + (ph - 0.6) * yfrac,
+            pz + aOff.z,
+          );
           draw2DPicketAccentSymbol(ctx, pt[0], pt[1], acc, 0.9);
         });
       }
     }
     if (state.piece === 'sign-frame' || state.showSign) {
-      const signCenter = proj(pw / 2, ph * 0.55, pd * 0.68);
+      const signOff = itemOffsetOf(state, PIECE_MOVE_ID);
+      const signCenter = proj(
+        pw / 2 + signOff.x,
+        ph * 0.55,
+        pd * 0.68 + signOff.z,
+      );
       drawSignPanelContent2D(ctx, state, signCenter[0] - 85, signCenter[1] - 34, 170, 68, true);
     }
   }
@@ -4174,6 +4385,48 @@ export function buildDetailedCutList(state: ConfiguratorState): DetailedCutSumma
     totalMeasure: '100% coverage',
     notes: 'Shop cured / architectural exterior grade',
   });
+
+  // Reflect moved items' new positions / offsets in the cut list
+  const movedEntries = Object.entries(state.itemOffsets || {}).filter(
+    ([, off]) =>
+      off && (Math.abs(off.x) > 0.001 || Math.abs(off.z) > 0.001),
+  );
+  if (movedEntries.length > 0) {
+    const byCategory: Record<string, string[]> = {};
+    movedEntries.forEach(([id, off]) => {
+      const bucket =
+        id === PIECE_MOVE_ID
+          ? 'Structural Frame'
+          : id.startsWith('picket:')
+            ? 'Infill & Pickets'
+            : 'Caps, Leaves & Ornamental';
+      (byCategory[bucket] ||= []).push(
+        `${moveItemLabel(id)} moved ${formatItemOffset(off)}`,
+      );
+    });
+    rawItems.forEach((row) => {
+      const notes = byCategory[row.category];
+      if (notes?.length) {
+        row.notes = `${row.notes} · ${notes.join(' · ')}`;
+      }
+    });
+    rawItems.push({
+      category: 'Hardware & Signage',
+      part: 'Placed Item Positions (Move Tool)',
+      stockProfile: movedEntries
+        .map(([id]) => moveItemLabel(id))
+        .join(', '),
+      qty: `${movedEntries.length} moved`,
+      cutLength: 'As placed',
+      totalMeasure: 'Layout only',
+      notes: movedEntries
+        .map(
+          ([id, off]) =>
+            `${moveItemLabel(id)}: ${formatItemOffset(off)} from original spot`,
+        )
+        .join(' · '),
+    });
+  }
 
   const items: DetailedCutItem[] = rawItems.map((row, idx) => ({
     tag: makeCalloutTag(idx),
