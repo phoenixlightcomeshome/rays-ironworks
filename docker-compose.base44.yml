@@ -1,0 +1,42 @@
+# Base44 development environment.
+#
+# The live app is the Vite project in ai-studio-app/2026-11-22-0150.
+# Runs that subfolder from the cloned source with the Vite dev server
+# (live reload) on host port 3000. Nothing else in the repo is served.
+services:
+  web:
+    image: oven/bun:1
+    working_dir: /workspace/ai-studio-app/2026-11-22-0150
+    volumes:
+      - ${BASE44_PROJECT_ROOT}:/workspace
+      # Dependencies live in a named volume so the bind mount stays clean.
+      - web_node_modules:/workspace/ai-studio-app/2026-11-22-0150/node_modules
+    command:
+      - sh
+      - -ec
+      - bun install --frozen-lockfile && exec bun run dev
+    ports:
+      - "3000:3000"
+    environment:
+      - BASE44_PREVIEW_MODE
+      - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS
+      # Bind-mounted source: poll for changes so hot reload fires reliably.
+      - CHOKIDAR_USEPOLLING=1
+    labels:
+      base44.project: "Ray's Ironworks"
+      base44.kind: web
+      base44.port: "3000"
+    restart: on-failure
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+
+volumes:
+  web_node_modules:
