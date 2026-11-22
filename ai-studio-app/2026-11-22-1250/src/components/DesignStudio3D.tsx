@@ -57,6 +57,7 @@ import {
   getCachedPhotoRelief,
   getCalibrationSummaryText,
 } from '../utils/photoRelief';
+import { DimensionNumberInput } from './DimensionNumberInput';
 
 export type { UploadedPhoto3D };
 import {
@@ -5448,13 +5449,30 @@ export function DesignStudio3D({
             </div>
 
             <div>
-              <div className="flex justify-between text-sm mb-1">
+              <div className="flex items-center justify-between gap-2 text-sm mb-1">
                 <label htmlFor="cfg-width" className="text-[#cfc9bf]">
                   {pieceSpec.widthLabel}
                 </label>
-                <span className="text-[#e8a317] font-semibold tabular-nums">
-                  {formatFeetInches(config.width)}
-                </span>
+                <div className="flex items-center gap-2">
+                  <DimensionNumberInput
+                    id="cfg-width-value"
+                    label={`${pieceSpec.widthLabel} in feet`}
+                    value={config.width}
+                    min={
+                      config.sizeMode === 'standard' ? pieceSpec.widthMin : 0.5
+                    }
+                    max={
+                      config.sizeMode === 'standard' ? pieceSpec.widthMax : 200
+                    }
+                    step={pieceSpec.widthStep}
+                    onChange={(next) =>
+                      setConfig((prev) => ({ ...prev, width: next }))
+                    }
+                  />
+                  <span className="text-[#e8a317] font-semibold tabular-nums">
+                    {formatFeetInches(config.width)}
+                  </span>
+                </div>
               </div>
               <input
                 id="cfg-width"
@@ -5475,13 +5493,30 @@ export function DesignStudio3D({
             </div>
 
             <div>
-              <div className="flex justify-between text-sm mb-1">
+              <div className="flex items-center justify-between gap-2 text-sm mb-1">
                 <label htmlFor="cfg-height" className="text-[#cfc9bf]">
                   {pieceSpec.heightLabel}
                 </label>
-                <span className="text-[#e8a317] font-semibold tabular-nums">
-                  {formatFeetInches(config.height)}
-                </span>
+                <div className="flex items-center gap-2">
+                  <DimensionNumberInput
+                    id="cfg-height-value"
+                    label={`${pieceSpec.heightLabel} in feet`}
+                    value={config.height}
+                    min={
+                      config.sizeMode === 'standard' ? pieceSpec.heightMin : 0.5
+                    }
+                    max={
+                      config.sizeMode === 'standard' ? pieceSpec.heightMax : 200
+                    }
+                    step={pieceSpec.heightStep}
+                    onChange={(next) =>
+                      setConfig((prev) => ({ ...prev, height: next }))
+                    }
+                  />
+                  <span className="text-[#e8a317] font-semibold tabular-nums">
+                    {formatFeetInches(config.height)}
+                  </span>
+                </div>
               </div>
               <input
                 id="cfg-height"
